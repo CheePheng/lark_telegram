@@ -1,0 +1,33 @@
+name = "tg-fin-bridge"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+account_id = "5f4d31a75fd669df8527210deb973591"
+
+# --- Public (non-secret) configuration -------------------------------------
+# Edit these for your environment. Secrets go in via `wrangler secret put` (see README).
+[vars]
+# Intercom region base URL: US = https://api.intercom.io, EU = https://api.eu.intercom.io, AU = https://api.au.intercom.io
+INTERCOM_BASE_URL = "https://api.intercom.io"
+# Intercom API version header. Fin Agent API requires 2.14+ (may be "Unstable" while in managed availability).
+INTERCOM_API_VERSION = "2.14"
+# Public URL of THIS worker, used to build verification links. Set after first deploy.
+# e.g. https://tg-fin-bridge.<your-subdomain>.workers.dev
+PUBLIC_BASE_URL = "https://tg-fin-bridge.askada.workers.dev"
+# Whether unverified Telegram users may chat with Fin for general FAQ (account data still requires verification).
+ALLOW_UNVERIFIED_CHAT = "true"
+
+# --- KV namespace ----------------------------------------------------------
+# Create with: wrangler kv namespace create tg_fin_state
+# Then paste the returned id below (and a preview_id for `wrangler dev`).
+[[kv_namespaces]]
+binding = "TG_FIN_STATE"
+id = "c8e0632dc8e94009ae8b46a7aec3245f"
+preview_id = "9e5c5c696bae4414bc42bf174df89d34"
+
+# --- Secrets (DO NOT put values here; use `wrangler secret put NAME`) -------
+#   TELEGRAM_BOT_TOKEN
+#   TELEGRAM_WEBHOOK_SECRET
+#   INTERCOM_FIN_API_KEY
+#   INTERCOM_FIN_WEBHOOK_SECRET
+#   GATEWAY_API_TOKEN
+#   IDENTITY_SIGNING_SECRET

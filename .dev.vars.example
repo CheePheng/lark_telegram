@@ -1,0 +1,9 @@
+# Copy to ".dev.vars" for local `wrangler dev`. NEVER commit the real .dev.vars.
+# In production these are set with `wrangler secret put NAME` instead.
+
+TELEGRAM_BOT_TOKEN="123456:put-your-botfather-token-here"
+TELEGRAM_WEBHOOK_SECRET="generate-a-long-random-string"
+INTERCOM_FIN_API_KEY="your-fin-agent-api-key"
+INTERCOM_FIN_WEBHOOK_SECRET="signing-secret-from-intercom-fin-webhook"
+GATEWAY_API_TOKEN="generate-a-long-random-string"
+IDENTITY_SIGNING_SECRET="generate-a-long-random-string"
