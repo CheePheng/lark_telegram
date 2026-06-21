@@ -20,6 +20,8 @@ export interface Env {
   INTERCOM_FIN_WEBHOOK_SECRET: string;
   GATEWAY_API_TOKEN: string;
   IDENTITY_SIGNING_SECRET: string;
+  INTERCOM_API_TOKEN: string;
+  INTERCOM_CLIENT_SECRET: string;
 }
 
 export function allowUnverifiedChat(env: Env): boolean {

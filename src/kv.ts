@@ -68,3 +68,37 @@ export async function consumeVerifyState(env: Env, state: string): Promise<strin
   if (tgUserId) await env.TG_FIN_STATE.delete(key);
   return tgUserId;
 }
+
+// --- human handoff ---------------------------------------------------------
+
+/** An active handoff to a human in the Intercom inbox. Presence + state "open" = human mode. */
+export interface Handoff {
+  conversation_id: string;
+  contact_id: string;
+  state: "open";
+}
+
+export async function getContactId(env: Env, tgUserId: string): Promise<string | null> {
+  return env.TG_FIN_STATE.get(`contact:${tgUserId}`);
+}
+export async function setContactId(env: Env, tgUserId: string, contactId: string): Promise<void> {
+  await env.TG_FIN_STATE.put(`contact:${tgUserId}`, contactId);
+}
+export async function getHandoff(env: Env, tgUserId: string): Promise<Handoff | null> {
+  return env.TG_FIN_STATE.get<Handoff>(`handoff:${tgUserId}`, "json");
+}
+export async function setHandoff(env: Env, tgUserId: string, h: Handoff): Promise<void> {
+  await Promise.all([
+    env.TG_FIN_STATE.put(`handoff:${tgUserId}`, JSON.stringify(h)),
+    env.TG_FIN_STATE.put(`icid:${h.conversation_id}`, tgUserId),
+  ]);
+}
+export async function clearHandoff(env: Env, tgUserId: string, conversationId: string): Promise<void> {
+  await Promise.all([
+    env.TG_FIN_STATE.delete(`handoff:${tgUserId}`),
+    env.TG_FIN_STATE.delete(`icid:${conversationId}`),
+  ]);
+}
+export async function getTelegramByIntercomConversation(env: Env, conversationId: string): Promise<string | null> {
+  return env.TG_FIN_STATE.get(`icid:${conversationId}`);
+}

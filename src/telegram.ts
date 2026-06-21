@@ -7,9 +7,10 @@
  */
 import type { Env } from "./env";
 import { allowUnverifiedChat } from "./env";
-import { getMapping, putMapping, getConversationId, linkConversation, clearConversation } from "./kv";
+import { getMapping, putMapping, getConversationId, linkConversation, clearConversation, getHandoff, clearHandoff } from "./kv";
 import { sendToFin, type FinUserContext } from "./fin";
 import { buildVerifyLink } from "./identity";
+import { replyAsUser } from "./intercom";
 
 interface TelegramUpdate {
   message?: TelegramMessage;
@@ -76,9 +77,22 @@ export async function handleTelegramWebhook(request: Request, env: Env): Promise
       return ok();
     }
     if (text.startsWith("/reset") || text.startsWith("/new") || text.startsWith("/clear")) {
+      const handoff = await getHandoff(env, tgUserId);
+      if (handoff?.state === "open") {
+        await clearHandoff(env, tgUserId, handoff.conversation_id);
+        await sendTelegramMessage(env, tgUserId, "🔄 Left the human chat — you're back with Fin. Ask me anything.");
+        return ok();
+      }
       const convId = await getConversationId(env, tgUserId);
       if (convId) await clearConversation(env, tgUserId, convId);
       await sendTelegramMessage(env, tgUserId, "🔄 Fresh start — I've cleared our conversation. Ask me anything.");
+      return ok();
+    }
+
+    // If the player is in a human handoff, route their message to the inbox conversation.
+    const handoff = await getHandoff(env, tgUserId);
+    if (handoff?.state === "open") {
+      await replyAsUser(env, handoff.conversation_id, handoff.contact_id, text);
       return ok();
     }
 

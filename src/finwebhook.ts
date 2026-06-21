@@ -8,6 +8,7 @@ import { parseFinWebhook, verifyFinWebhookSignature } from "./fin";
 import { getTelegramByConversation, clearConversation } from "./kv";
 import { htmlToPlainText } from "./html";
 import { sendTelegramMessage } from "./telegram";
+import { startHandoff } from "./intercom";
 
 export async function handleFinWebhook(request: Request, env: Env): Promise<Response> {
   const raw = await request.text();
@@ -41,7 +42,7 @@ export async function handleFinWebhook(request: Request, env: Env): Promise<Resp
   if (event.type === "fin_status_updated") {
     const tgUserId = await getTelegramByConversation(env, event.conversationId);
     if (tgUserId && event.status === "escalated") {
-      await sendTelegramMessage(env, tgUserId, "🔔 This has been escalated to our team — someone will follow up here.");
+      await startHandoff(env, tgUserId, "(escalation requested)");
     }
     if (tgUserId && (event.status === "escalated" || event.status === "resolved" || event.status === "complete")) {
       await clearConversation(env, tgUserId, event.conversationId);
