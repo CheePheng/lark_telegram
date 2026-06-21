@@ -22,6 +22,8 @@ export interface Env {
   IDENTITY_SIGNING_SECRET: string;
   INTERCOM_API_TOKEN: string;
   INTERCOM_CLIENT_SECRET: string;
+  LARK_WEBHOOK_URL: string;
+  LARK_WEBHOOK_SECRET: string;
 }
 
 export function allowUnverifiedChat(env: Env): boolean {

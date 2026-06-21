@@ -13,6 +13,7 @@ import { handleTelegramWebhook } from "./telegram";
 import { handleFinWebhook } from "./finwebhook";
 import { handleIntercomWebhook } from "./intercomwebhook";
 import { handleGateway, isGatewayPath } from "./gateway";
+import { handleLarkTask } from "./larktask";
 import { handleVerifyPage, handleVerifyComplete } from "./identity";
 
 export default {
@@ -32,6 +33,9 @@ export default {
     }
     if (pathname === "/intercom/webhook" && method === "POST") {
       return handleIntercomWebhook(request, env);
+    }
+    if (pathname === "/api/lark-task" && method === "POST") {
+      return handleLarkTask(request, env);
     }
     if (isGatewayPath(pathname)) {
       return handleGateway(request, env, url);

@@ -102,3 +102,15 @@ export async function clearHandoff(env: Env, tgUserId: string, conversationId: s
 export async function getTelegramByIntercomConversation(env: Env, conversationId: string): Promise<string | null> {
   return env.TG_FIN_STATE.get(`icid:${conversationId}`);
 }
+
+// --- Lark escalation dedupe ------------------------------------------------
+const LARK_DEDUPE_TTL_SECONDS = 24 * 60 * 60;
+
+/** True if this case+exception was already escalated to Lark (records it if not). */
+export async function alreadyEscalatedToLark(env: Env, dedupeKey: string): Promise<boolean> {
+  const k = `larktask:${dedupeKey}`;
+  const existing = await env.TG_FIN_STATE.get(k);
+  if (existing) return true;
+  await env.TG_FIN_STATE.put(k, new Date().toISOString(), { expirationTtl: LARK_DEDUPE_TTL_SECONDS });
+  return false;
+}
