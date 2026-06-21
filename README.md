@@ -32,9 +32,15 @@ Telegram Bot API ─► Cloudflare Worker  /telegram/webhook
 | 2 | Fin Agent API key | Intercom → Fin AI Agent → Deploy → Fin Agent API (Step C1) | `INTERCOM_FIN_API_KEY` |
 | 3 | Fin webhook signing secret | Intercom Fin webhook setup (Step C2) | `INTERCOM_FIN_WEBHOOK_SECRET` |
 | 4 | Intercom region | Your Intercom plan/region (US/EU/AU) | `INTERCOM_BASE_URL` (var) |
+| 5 | Intercom general API token (read+write Conversations & Contacts) | Intercom → Settings → API tokens, or a Developer Hub app's Access token | `INTERCOM_API_TOKEN` |
+| 6 | Developer Hub app **Client secret** (for human-handoff webhook signature) | Developer Hub → your app → Configure → Basic information | `INTERCOM_CLIENT_SECRET` |
 
 The following secrets you **generate yourself** (any long random string — see "Generate secrets" below):
 `TELEGRAM_WEBHOOK_SECRET`, `GATEWAY_API_TOKEN`, `IDENTITY_SIGNING_SECRET`.
+
+> **Human handoff** uses Intercom's standard Conversations API + webhook (items 5 & 6), which is
+> separate from the Fin Agent API (items 2 & 3). Note: in our workspace, creating a conversation
+> requires `from.type: "user"` (the spec's `"contact"` returns 404) — see `src/intercom.ts`.
 
 > ℹ️ The **Fin Agent API is invite-only ("managed availability")**. If you don't see it in the
 > Intercom dashboard, ask your Intercom account manager to enable it for your workspace.
@@ -132,6 +138,7 @@ Expect `{"ok":true,...}`. Check anytime with `.../getWebhookInfo`.
 - **M2 identity:** send `/verify` → open the link → pick a demo member → bot confirms “verified”. (Demo members: `300425`, `300999`.)
 - **M3 data:** as a verified user ask *"status of deposit DEP-260603-001?"* → Fin returns payment/posting/ETA with the account masked and no internal codes. An unverified user is asked to verify first.
 - **M4 demo script:** run the source doc's §12 script end-to-end, in English and 中文.
+- **M5 human handoff:** send *"I want to talk to a human"* → a `Telegram <id>` conversation opens in the inbox; agent replies reach Telegram (`👤`); player messages reach the inbox; closing it returns the player to Fin.
 
 Quick gateway check (without Fin), using your `GATEWAY_API_TOKEN`:
 ```powershell
@@ -146,17 +153,37 @@ npx wrangler dev
 
 ---
 
+## Human handoff
+When Fin escalates (e.g. the player asks for a human), the Worker opens a **real Intercom inbox
+conversation** (named `Telegram <id>`) so an agent can take over:
+
+- **Player → inbox:** while in handoff, the player's Telegram messages are posted into the inbox conversation.
+- **Agent → player:** the agent's inbox replies are relayed to Telegram (prefixed `👤`) via the standard `conversation.admin.replied` webhook (`/intercom/webhook`, X-Hub-Signature SHA1).
+- **End:** the agent **closing** the conversation (or the player sending `/reset`) returns the player to Fin.
+- **Lifecycle:** one open handoff per player; asking for a human again reuses the open conversation; after it's closed, a new escalation opens a fresh one.
+
+Note: Fin also keeps its own read-only copy of the chat in the inbox (named just `<id>`, "handled
+through an external system"). Reply in the **`Telegram <id>`** one — that's the bridged, repliable
+conversation.
+
+**Routes:** `/telegram/webhook`, `/fin/webhook`, `/intercom/webhook`, `/api/{kyc,deposit,withdrawal}`, `/verify`, `/verify/complete`.
+**Bot commands:** `/start`, `/verify`, `/reset`.
+
+---
+
 ## Project structure
 | File | Purpose |
 |---|---|
 | `src/index.ts` | Router / entry point |
 | `src/telegram.ts` | Telegram inbound + `sendTelegramMessage` |
 | `src/fin.ts` | Fin Agent API client + webhook signature (verified against Intercom 2.14 spec + a live `200`) |
-| `src/finwebhook.ts` | Handles Fin's `fin_replied` → Telegram |
+| `src/finwebhook.ts` | Fin's `fin_replied` → Telegram; `escalated` → start human handoff |
+| `src/intercom.ts` | Intercom Conversations client + `startHandoff` (opens the inbox conversation) |
+| `src/intercomwebhook.ts` | Standard webhook: agent reply → Telegram; conversation closed → back to Fin |
 | `src/gateway.ts` | iGaming data endpoints + masking + safe-reason mapping |
 | `src/identity.ts` | Mock signed-login + KV mapping |
 | `src/mockdata.ts` | Sample members + KYC/deposit/withdrawal records |
-| `src/kv.ts` | Typed KV helpers |
+| `src/kv.ts` | Typed KV helpers (identity, conversation, handoff state) |
 | `src/crypto.ts` / `src/html.ts` | HMAC/base64url + HTML→text helpers |
 
 ## Going to production later
