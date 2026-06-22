@@ -1,5 +1,9 @@
 # Unified-Inbox Channels (Telegram + Lark) Implementation Plan
 
+> ⛔ **SUPERSEDED (2026-06-22).** Phase-0 gate failed (native Fin won't auto-answer API-created
+> non-native-channel conversations). We stay on the **Fin Agent API + handoff** model and add Lark
+> on it — see `2026-06-22-add-lark-channel.md`. This plan is kept for the record only.
+
 > **For agentic workers:** Steps use checkbox (`- [ ]`) syntax. This project has **no unit-test harness**; it's integration-bound, so each task is verified by **`npm run typecheck` + live curl/channel checks**. Code is complete in every step; commit per task. PATH prefix for PowerShell: `$env:Path = "C:\Program Files\nodejs;$env:Path"`; account env: `$env:CLOUDFLARE_ACCOUNT_ID = "5f4d31a75fd669df8527210deb973591"`.
 
 **Goal:** Make Telegram and Lark behave as **customer channels into one Intercom inbox**: a message creates/continues a standard conversation, **Fin AI answers and human agents reply** in that inbox, and **every reply (Fin or human) is relayed back** to the customer's channel.

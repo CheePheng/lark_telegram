@@ -1,5 +1,10 @@
 # Unified-Inbox Channels (Telegram + Lark) — Design Spec
 
+> ⛔ **SUPERSEDED (2026-06-22).** The Phase-0 gate failed: native Fin only auto-answers Intercom-native
+> channels (Messenger/WhatsApp/etc.), not API-created conversations for non-native channels like
+> Telegram/Lark. Decision: stay on the **Fin Agent API + handoff** model and add Lark as a channel
+> on it. See `2026-06-22-add-lark-channel.md`.
+
 **Date:** 2026-06-22 · **Repo:** existing `tg-fin-bridge` Worker
 
 ## Goal (the boss's model)
