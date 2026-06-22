@@ -14,10 +14,13 @@ import {
   findKyc,
   findDeposit,
   findWithdrawal,
+  brandFor,
   type KycCaseInternal,
   type DepositInternal,
   type WithdrawalInternal,
 } from "./mockdata";
+import { buildCard, postLarkCard, type ExceptionType } from "./lark";
+import { alreadyEscalatedToLark } from "./kv";
 
 export function isGatewayPath(pathname: string): boolean {
   return pathname === "/api/kyc" || pathname === "/api/deposit" || pathname === "/api/withdrawal";
@@ -31,15 +34,80 @@ export async function handleGateway(request: Request, env: Env, url: URL): Promi
   if (!memberId) return json({ error: "member_id_required" }, 400);
 
   switch (url.pathname) {
-    case "/api/kyc":
-      return json(kycOut(findKyc(memberId)));
-    case "/api/deposit":
-      return json(depositOut(findDeposit(memberId, url.searchParams.get("deposit_id")?.trim() ?? "")));
-    case "/api/withdrawal":
-      return json(withdrawalOut(findWithdrawal(memberId, url.searchParams.get("withdrawal_id")?.trim() ?? "")));
+    case "/api/kyc": {
+      const k = findKyc(memberId);
+      if (k) await maybeEscalate(env, "kyc", memberId, k);
+      return json(kycOut(k));
+    }
+    case "/api/deposit": {
+      const d = findDeposit(memberId, url.searchParams.get("deposit_id")?.trim() ?? "");
+      if (d) await maybeEscalate(env, "deposit", memberId, d);
+      return json(depositOut(d));
+    }
+    case "/api/withdrawal": {
+      const w = findWithdrawal(memberId, url.searchParams.get("withdrawal_id")?.trim() ?? "");
+      if (w) await maybeEscalate(env, "withdrawal", memberId, w);
+      return json(withdrawalOut(w));
+    }
     default:
       return json({ error: "not_found" }, 404);
   }
+}
+
+// --- auto-escalation: fire a Lark card when a looked-up case is an exception -
+
+type CaseKind = "kyc" | "deposit" | "withdrawal";
+type InternalRecord = KycCaseInternal | DepositInternal | WithdrawalInternal;
+
+async function maybeEscalate(env: Env, kind: CaseKind, memberId: string, rec: InternalRecord): Promise<void> {
+  const ex = detectException(kind, rec);
+  if (!ex) return;
+  if (await alreadyEscalatedToLark(env, `${ex.business_ref}:${ex.exception_type}`)) return;
+  await postLarkCard(
+    env,
+    buildCard({
+      member_id: memberId,
+      brand_id: brandFor(memberId),
+      business_ref: ex.business_ref,
+      exception_type: ex.exception_type,
+      summary: ex.summary,
+      source: "Telegram",
+    }),
+  );
+}
+
+function detectException(
+  kind: CaseKind,
+  rec: InternalRecord,
+): { business_ref: string; exception_type: ExceptionType; summary: string } | null {
+  if (kind === "deposit") {
+    const d = rec as DepositInternal;
+    if (d.sla_breached || d.posting_status === "FAILED") {
+      return { business_ref: d.deposit_id, exception_type: "DEPOSIT_NOT_POSTED", summary: "Paid but not posted to wallet beyond threshold." };
+    }
+    return null;
+  }
+  if (kind === "withdrawal") {
+    const w = rec as WithdrawalInternal;
+    if (w.internal_failure_code && /MISMATCH/i.test(w.internal_failure_code)) {
+      return { business_ref: w.withdrawal_id, exception_type: "WITHDRAWAL_ACCOUNT_MISMATCH", summary: "Payout account / name mismatch." };
+    }
+    if (w.status === "FAILED" && !w.returned_to_wallet) {
+      return { business_ref: w.withdrawal_id, exception_type: "WITHDRAWAL_NOT_RETURNED", summary: "Failed withdrawal; funds not returned to wallet." };
+    }
+    if (w.sla_breached) {
+      return { business_ref: w.withdrawal_id, exception_type: "WITHDRAWAL_STALLED", summary: "Withdrawal stalled beyond SLA." };
+    }
+    return null;
+  }
+  const k = rec as KycCaseInternal;
+  if (k.sla_breached) {
+    return { business_ref: k.kyc_case_id, exception_type: "KYC_SLA_BREACH", summary: "KYC review past its SLA." };
+  }
+  if (k.current_stage === "MANUAL_REVIEW") {
+    return { business_ref: k.kyc_case_id, exception_type: "KYC_MANUAL_REVIEW", summary: "KYC requires manual review." };
+  }
+  return null;
 }
 
 function authorized(request: Request, env: Env): boolean {
