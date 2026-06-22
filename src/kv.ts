@@ -84,6 +84,9 @@ export async function getContactId(env: Env, tgUserId: string): Promise<string |
 export async function setContactId(env: Env, tgUserId: string, contactId: string): Promise<void> {
   await env.TG_FIN_STATE.put(`contact:${tgUserId}`, contactId);
 }
+export async function clearContactId(env: Env, tgUserId: string): Promise<void> {
+  await env.TG_FIN_STATE.delete(`contact:${tgUserId}`);
+}
 export async function getHandoff(env: Env, tgUserId: string): Promise<Handoff | null> {
   return env.TG_FIN_STATE.get<Handoff>(`handoff:${tgUserId}`, "json");
 }
@@ -113,4 +116,23 @@ export async function alreadyEscalatedToLark(env: Env, dedupeKey: string): Promi
   if (existing) return true;
   await env.TG_FIN_STATE.put(k, new Date().toISOString(), { expirationTtl: LARK_DEDUPE_TTL_SECONDS });
   return false;
+}
+
+// --- handoff transcript (for context + summary note) -----------------------
+const TRANSCRIPT_MAX = 20;
+export type TranscriptEntry = { role: "customer" | "fin" | "agent"; text: string };
+
+/** Append a line to the per-user transcript (keeps the last TRANSCRIPT_MAX). */
+export async function appendTranscript(env: Env, tgUserId: string, role: TranscriptEntry["role"], text: string): Promise<void> {
+  const key = `transcript:${tgUserId}`;
+  const cur = (await env.TG_FIN_STATE.get<TranscriptEntry[]>(key, "json")) ?? [];
+  cur.push({ role, text });
+  while (cur.length > TRANSCRIPT_MAX) cur.shift();
+  await env.TG_FIN_STATE.put(key, JSON.stringify(cur), { expirationTtl: 7 * 24 * 60 * 60 });
+}
+export async function getTranscript(env: Env, tgUserId: string): Promise<TranscriptEntry[]> {
+  return (await env.TG_FIN_STATE.get<TranscriptEntry[]>(`transcript:${tgUserId}`, "json")) ?? [];
+}
+export async function clearTranscript(env: Env, tgUserId: string): Promise<void> {
+  await env.TG_FIN_STATE.delete(`transcript:${tgUserId}`);
 }

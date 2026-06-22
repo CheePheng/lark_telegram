@@ -9,7 +9,7 @@
  *   POST /conversations/{id}/reply         {message_type:"comment", type:"user", intercom_user_id, body}
  */
 import type { Env } from "./env";
-import { getContactId, setContactId, getHandoff, setHandoff } from "./kv";
+import { getContactId, setContactId, clearContactId, getHandoff, setHandoff, clearHandoff, getTranscript, type TranscriptEntry } from "./kv";
 import { sendTelegramMessage } from "./telegram";
 
 function headers(env: Env): HeadersInit {
@@ -23,15 +23,21 @@ function headers(env: Env): HeadersInit {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Admin (Ask Ada) used to author the summary note and own the handoff conversation. */
+const HANDOFF_ADMIN_ID = "9114500";
+
 /** Return a cached contact id for the Telegram user, creating one if needed. */
 export async function ensureContact(env: Env, tgUserId: string): Promise<string> {
   const cached = await getContactId(env, tgUserId);
-  if (cached) return cached;
+  if (cached) {
+    await renameContact(env, cached, "IGaming Telegram"); // keep the display name current
+    return cached;
+  }
 
   const res = await fetch(`${env.INTERCOM_BASE_URL}/contacts`, {
     method: "POST",
     headers: headers(env),
-    body: JSON.stringify({ role: "user", external_id: `tg_${tgUserId}`, name: `Telegram ${tgUserId}` }),
+    body: JSON.stringify({ role: "user", external_id: `tg_${tgUserId}`, name: "IGaming Telegram" }),
   });
 
   let id: string | null = null;
@@ -43,6 +49,14 @@ export async function ensureContact(env: Env, tgUserId: string): Promise<string>
   if (!id) throw new Error(`ensureContact failed: ${res.status} ${await res.text().catch(() => "")}`);
   await setContactId(env, tgUserId, id);
   return id;
+}
+
+async function renameContact(env: Env, contactId: string, name: string): Promise<void> {
+  await fetch(`${env.INTERCOM_BASE_URL}/contacts/${contactId}`, {
+    method: "PUT",
+    headers: headers(env),
+    body: JSON.stringify({ name }),
+  }).catch(() => {});
 }
 
 async function findContactByExternalId(env: Env, externalId: string): Promise<string | null> {
@@ -94,16 +108,77 @@ export async function replyAsUser(env: Env, conversationId: string, contactId: s
 export async function startHandoff(env: Env, tgUserId: string, lastQuestion: string): Promise<void> {
   const existing = await getHandoff(env, tgUserId);
   if (existing?.state === "open") {
-    await replyAsUser(env, existing.conversation_id, existing.contact_id, "(Customer asked to speak with a human again.)");
-    await sendTelegramMessage(env, tgUserId, "You're already connected to our team — they'll reply here.");
-    return;
+    try {
+      await replyAsUser(env, existing.conversation_id, existing.contact_id, "(Customer asked to speak with a human again.)");
+      await sendTelegramMessage(env, tgUserId, "You're already connected to our team — they'll reply here.");
+      return;
+    } catch {
+      await clearHandoff(env, tgUserId, existing.conversation_id); // stale (e.g. old workspace) -> open a fresh one
+    }
   }
-  const contactId = await ensureContact(env, tgUserId);
-  const conversationId = await createConversation(
-    env,
-    contactId,
-    `Escalated from Telegram. The customer would like to speak with a human.\nLast message: ${lastQuestion}`,
-  );
+
+  const transcript = await getTranscript(env, tgUserId);
+  const body = buildHandoffBody(transcript, lastQuestion);
+  let contactId = await ensureContact(env, tgUserId);
+  let conversationId: string;
+  try {
+    conversationId = await createConversation(env, contactId, body);
+  } catch {
+    // Cached contact may be stale (created in a different workspace) -> recreate and retry.
+    await clearContactId(env, tgUserId);
+    contactId = await ensureContact(env, tgUserId);
+    conversationId = await createConversation(env, contactId, body);
+  }
   await setHandoff(env, tgUserId, { conversation_id: conversationId, contact_id: contactId, state: "open" });
+  await addSummaryNote(env, conversationId, transcript);
+  await assignConversation(env, conversationId, HANDOFF_ADMIN_ID); // so it lands in the agent's inbox
   await sendTelegramMessage(env, tgUserId, "🔔 You're now connected to our team — an agent will reply right here.");
+}
+
+/** Assign the conversation to an admin so it shows in their "Your inbox". */
+async function assignConversation(env: Env, conversationId: string, adminId: string): Promise<void> {
+  await fetch(`${env.INTERCOM_BASE_URL}/conversations/${conversationId}/parts`, {
+    method: "POST",
+    headers: headers(env),
+    body: JSON.stringify({ message_type: "assignment", type: "admin", admin_id: adminId, assignee_id: adminId }),
+  }).catch(() => {});
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** A readable transcript seeded as the handoff conversation body, so the agent sees full context. */
+function buildHandoffBody(transcript: TranscriptEntry[], lastQuestion: string): string {
+  const turns = transcript.length ? transcript : [{ role: "customer" as const, text: lastQuestion }];
+  const rows = turns.map((t) => {
+    const who = t.role === "customer" ? "🧑 Customer" : t.role === "fin" ? "🤖 Fin (AI)" : "👤 Agent";
+    const text = escapeHtml(t.text).replace(/\n+/g, "<br>");
+    return `<p><b>${who}</b><br>${text}</p>`;
+  });
+  return [
+    `<p>🔔 <b>Escalated from Telegram</b> — the customer asked to speak with a human.</p>`,
+    `<p>──────── Conversation so far ────────</p>`,
+    ...rows,
+  ].join("");
+}
+
+/** Post an internal note summarising the conversation for the agent. */
+async function addSummaryNote(env: Env, conversationId: string, transcript: TranscriptEntry[]): Promise<void> {
+  const customerMsgs = transcript.filter((t) => t.role === "customer").map((t) => t.text);
+  const lastFin = [...transcript].reverse().find((t) => t.role === "fin")?.text;
+  const note = [
+    `<p>📋 <b>Summary (auto, from Telegram)</b></p>`,
+    `<p><b>Question:</b> ${escapeHtml(customerMsgs[0] ?? "(unknown)")}</p>`,
+    `<p><b>Customer messages:</b></p>`,
+    `<ul>${(customerMsgs.length ? customerMsgs : ["(none)"]).map((m) => `<li>${escapeHtml(m)}</li>`).join("")}</ul>`,
+    `<p><b>Fin's last answer:</b> ${lastFin ? escapeHtml(lastFin.slice(0, 300)) : "(none)"}</p>`,
+    `<p>⚠️ <b>Customer has requested a human agent.</b></p>`,
+  ].join("");
+  const res = await fetch(`${env.INTERCOM_BASE_URL}/conversations/${conversationId}/reply`, {
+    method: "POST",
+    headers: headers(env),
+    body: JSON.stringify({ message_type: "note", type: "admin", admin_id: HANDOFF_ADMIN_ID, body: note }),
+  });
+  if (!res.ok) console.error(`addSummaryNote failed: ${res.status} ${await res.text().catch(() => "")}`);
 }

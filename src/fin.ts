@@ -19,6 +19,7 @@ import { hmacSha256Hex, hmacSha256HexBytes, hexToBytes, safeEqual } from "./cryp
 export interface FinUserContext {
   /** Stable id for this user across the conversation (we use the Telegram user id). */
   userId: string;
+  displayName?: string;
   memberId?: string;
   brandId?: string;
   language?: string;
@@ -132,7 +133,7 @@ function buildRequestBody(conversationId: string, ctx: FinUserContext, text: str
   return {
     conversation_id: conversationId,
     message: { author: "user", body: text, timestamp: now, timestamp_ms: now },
-    user: { id: ctx.userId, attributes: attributesFor(ctx) },
+    user: { id: ctx.userId, name: ctx.displayName, attributes: attributesFor(ctx) },
   };
 }
 

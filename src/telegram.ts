@@ -7,7 +7,7 @@
  */
 import type { Env } from "./env";
 import { allowUnverifiedChat } from "./env";
-import { getMapping, putMapping, getConversationId, linkConversation, clearConversation, getHandoff, clearHandoff } from "./kv";
+import { getMapping, putMapping, getConversationId, linkConversation, clearConversation, getHandoff, clearHandoff, appendTranscript, clearTranscript } from "./kv";
 import { sendToFin, type FinUserContext } from "./fin";
 import { buildVerifyLink } from "./identity";
 import { replyAsUser } from "./intercom";
@@ -78,14 +78,11 @@ export async function handleTelegramWebhook(request: Request, env: Env): Promise
     }
     if (text.startsWith("/reset") || text.startsWith("/new") || text.startsWith("/clear")) {
       const handoff = await getHandoff(env, tgUserId);
-      if (handoff?.state === "open") {
-        await clearHandoff(env, tgUserId, handoff.conversation_id);
-        await sendTelegramMessage(env, tgUserId, "🔄 Left the human chat — you're back with Fin. Ask me anything.");
-        return ok();
-      }
+      if (handoff?.state === "open") await clearHandoff(env, tgUserId, handoff.conversation_id);
       const convId = await getConversationId(env, tgUserId);
       if (convId) await clearConversation(env, tgUserId, convId);
-      await sendTelegramMessage(env, tgUserId, "🔄 Fresh start — I've cleared our conversation. Ask me anything.");
+      await clearTranscript(env, tgUserId);
+      await sendTelegramMessage(env, tgUserId, "🔄 Fresh start — cleared our conversation (and any human chat). Ask me anything.");
       return ok();
     }
 
@@ -129,9 +126,11 @@ async function forwardToFin(env: Env, tgUserId: string, text: string, langCode?:
   }
 
   await sendTyping(env, tgUserId);
+  await appendTranscript(env, tgUserId, "customer", text);
 
   const finCtx: FinUserContext = {
     userId: tgUserId,
+    displayName: "IGaming Telegram",
     memberId: mapping?.member_id,
     brandId: mapping?.brand_id,
     language: langCode ?? mapping?.language,

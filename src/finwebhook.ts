@@ -5,7 +5,7 @@
  */
 import type { Env } from "./env";
 import { parseFinWebhook, verifyFinWebhookSignature } from "./fin";
-import { getTelegramByConversation, clearConversation } from "./kv";
+import { getTelegramByConversation, clearConversation, appendTranscript, getTranscript } from "./kv";
 import { htmlToPlainText } from "./html";
 import { sendTelegramMessage } from "./telegram";
 import { startHandoff } from "./intercom";
@@ -35,22 +35,43 @@ export async function handleFinWebhook(request: Request, env: Env): Promise<Resp
       return ok();
     }
     const text = htmlToPlainText(event.replyHtml) || "(Fin sent an empty reply)";
+    await appendTranscript(env, tgUserId, "fin", text);
     await sendTelegramMessage(env, tgUserId, text);
     return ok();
   }
 
   if (event.type === "fin_status_updated") {
     const tgUserId = await getTelegramByConversation(env, event.conversationId);
-    if (tgUserId && event.status === "escalated") {
-      await startHandoff(env, tgUserId, "(escalation requested)");
-    }
-    if (tgUserId && (event.status === "escalated" || event.status === "resolved" || event.status === "complete")) {
+    if (!tgUserId) return ok();
+
+    if (event.status === "escalated") {
+      // Fin escalates on its own (e.g. low confidence). Only hand off to a human
+      // when the customer actually asked for one — otherwise keep them with Fin.
+      const transcript = await getTranscript(env, tgUserId);
+      const lastCustomer = [...transcript].reverse().find((t) => t.role === "customer")?.text ?? "";
+      if (wantsHuman(lastCustomer)) {
+        await startHandoff(env, tgUserId, lastCustomer);
+        await clearConversation(env, tgUserId, event.conversationId);
+      } else {
+        console.log("FIN_ESCALATION_IGNORED " + JSON.stringify({ lastCustomer }));
+      }
+    } else if (event.status === "resolved" || event.status === "complete") {
       await clearConversation(env, tgUserId, event.conversationId);
     }
     return ok();
   }
 
   return ok();
+}
+
+/** True if the customer's message is clearly asking to reach a human/agent. */
+function wantsHuman(text: string): boolean {
+  const t = text.toLowerCase();
+  return (
+    /\b(human|live agent|real person|representative)\b/.test(t) ||
+    /\bagent\b/.test(t) ||
+    /(speak|talk|chat|connect|pass|transfer).{0,15}(human|agent|someone|person|representative|team|staff)/.test(t)
+  );
 }
 
 function ok(): Response {
