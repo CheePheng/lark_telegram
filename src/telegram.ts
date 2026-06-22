@@ -1,16 +1,16 @@
 /**
- * Telegram bridge: receives Bot API webhook updates, forwards user messages to
- * Fin, and exposes sendTelegramMessage (used here and by the Fin callback).
+ * Telegram bridge: receives Bot API webhook updates and routes user messages
+ * through the shared inbound router (Fin or live human handoff). Also exposes
+ * sendTelegramMessage, used by the outbound channel dispatcher and Fin callback.
  *
  * Assumes 1:1 private chats, so chat.id === from.id and a single id identifies
  * both the user (for identity/KV) and the chat (for sending).
  */
 import type { Env } from "./env";
 import { allowUnverifiedChat } from "./env";
-import { getMapping, putMapping, getConversationId, linkConversation, clearConversation, getHandoff, clearHandoff, appendTranscript, clearTranscript } from "./kv";
-import { sendToFin, type FinUserContext } from "./fin";
+import { getMapping, putMapping, getHandoff, clearHandoff, getFinConversation, clearFinConversation, clearTranscript } from "./kv";
 import { buildVerifyLink } from "./identity";
-import { replyAsUser } from "./intercom";
+import { routeInbound } from "./inbound";
 
 interface TelegramUpdate {
   message?: TelegramMessage;
@@ -24,6 +24,7 @@ interface TelegramMessage {
 }
 
 const TG_MAX_LEN = 4000;
+const CHANNEL = "telegram" as const;
 
 /** True only if the request carries the secret we registered with setWebhook. */
 export function verifyTelegramSecret(request: Request, env: Env): boolean {
@@ -63,84 +64,57 @@ export async function handleTelegramWebhook(request: Request, env: Env): Promise
   const text = msg?.text?.trim();
   if (!msg || !text) return ok(); // ignore non-text updates
 
-  const tgUserId = String(msg.from?.id ?? msg.chat.id);
+  const cuid = String(msg.from?.id ?? msg.chat.id);
   const langCode = msg.from?.language_code;
 
   try {
     if (text.startsWith("/start")) {
-      await sendTelegramMessage(env, tgUserId, startMessage());
+      await sendTelegramMessage(env, cuid, startMessage());
       return ok();
     }
     if (text.startsWith("/verify")) {
-      const link = await buildVerifyLink(env, tgUserId);
-      await sendTelegramMessage(env, tgUserId, `To view your account data, verify here:\n${link}`);
+      const link = await buildVerifyLink(env, cuid);
+      await sendTelegramMessage(env, cuid, `To view your account data, verify here:\n${link}`);
       return ok();
     }
     if (text.startsWith("/reset") || text.startsWith("/new") || text.startsWith("/clear")) {
-      const handoff = await getHandoff(env, tgUserId);
-      if (handoff?.state === "open") await clearHandoff(env, tgUserId, handoff.conversation_id);
-      const convId = await getConversationId(env, tgUserId);
-      if (convId) await clearConversation(env, tgUserId, convId);
-      await clearTranscript(env, tgUserId);
-      await sendTelegramMessage(env, tgUserId, "🔄 Fresh start — cleared our conversation (and any human chat). Ask me anything.");
+      const handoff = await getHandoff(env, CHANNEL, cuid);
+      if (handoff?.state === "open") await clearHandoff(env, CHANNEL, cuid, handoff.conversation_id);
+      const convId = await getFinConversation(env, CHANNEL, cuid);
+      if (convId) await clearFinConversation(env, CHANNEL, cuid, convId);
+      await clearTranscript(env, CHANNEL, cuid);
+      await sendTelegramMessage(env, cuid, "🔄 Fresh start — cleared our conversation (and any human chat). Ask me anything.");
       return ok();
     }
 
-    // If the player is in a human handoff, route their message to the inbox conversation.
-    const handoff = await getHandoff(env, tgUserId);
-    if (handoff?.state === "open") {
-      await replyAsUser(env, handoff.conversation_id, handoff.contact_id, text);
+    // Persist detected language; optionally gate unverified users (dormant in demo).
+    const mapping = await getMapping(env, cuid);
+    const verified = mapping?.verified === true;
+    if (!mapping || (langCode && mapping.language !== langCode)) {
+      await putMapping(env, {
+        telegram_user_id: cuid,
+        member_id: mapping?.member_id,
+        brand_id: mapping?.brand_id,
+        intercom_contact_id: mapping?.intercom_contact_id,
+        verified,
+        verification_method: mapping?.verification_method,
+        language: langCode ?? mapping?.language,
+        updated_at: new Date().toISOString(),
+      });
+    }
+    if (!verified && !allowUnverifiedChat(env)) {
+      const link = await buildVerifyLink(env, cuid);
+      await sendTelegramMessage(env, cuid, `Please verify your account first:\n${link}`);
       return ok();
     }
 
-    await forwardToFin(env, tgUserId, text, langCode);
+    await sendTyping(env, cuid);
+    await routeInbound(env, CHANNEL, cuid, text, langCode ?? mapping?.language);
   } catch (err) {
     console.error("telegram handler error", err);
-    await sendTelegramMessage(env, tgUserId, "Sorry — something went wrong. Please try again in a moment.").catch(() => {});
+    await sendTelegramMessage(env, cuid, "Sorry — something went wrong. Please try again in a moment.").catch(() => {});
   }
   return ok();
-}
-
-async function forwardToFin(env: Env, tgUserId: string, text: string, langCode?: string): Promise<void> {
-  const mapping = await getMapping(env, tgUserId);
-  const verified = mapping?.verified === true;
-
-  // Persist the detected language on first contact so Fin/templates can use it.
-  if (!mapping || (langCode && mapping.language !== langCode)) {
-    await putMapping(env, {
-      telegram_user_id: tgUserId,
-      member_id: mapping?.member_id,
-      brand_id: mapping?.brand_id,
-      intercom_contact_id: mapping?.intercom_contact_id,
-      verified: verified,
-      verification_method: mapping?.verification_method,
-      language: langCode ?? mapping?.language,
-      updated_at: new Date().toISOString(),
-    });
-  }
-
-  if (!verified && !allowUnverifiedChat(env)) {
-    const link = await buildVerifyLink(env, tgUserId);
-    await sendTelegramMessage(env, tgUserId, `Please verify your account first:\n${link}`);
-    return;
-  }
-
-  await sendTyping(env, tgUserId);
-  await appendTranscript(env, tgUserId, "customer", text);
-
-  const finCtx: FinUserContext = {
-    userId: tgUserId,
-    displayName: "IGaming Telegram",
-    memberId: mapping?.member_id,
-    brandId: mapping?.brand_id,
-    language: langCode ?? mapping?.language,
-    verified,
-  };
-
-  const conversationId = await getConversationId(env, tgUserId);
-  const { conversationId: newId } = await sendToFin(env, finCtx, text, conversationId);
-  if (newId !== conversationId) await linkConversation(env, tgUserId, newId);
-  // Fin's actual answer arrives asynchronously via /fin/webhook -> sendTelegramMessage.
 }
 
 function startMessage(): string {

@@ -10,6 +10,7 @@
  */
 import type { Env } from "./env";
 import { handleTelegramWebhook } from "./telegram";
+import { handleLarkWebhook } from "./larkchannel";
 import { handleFinWebhook } from "./finwebhook";
 import { handleIntercomWebhook } from "./intercomwebhook";
 import { handleGateway, isGatewayPath } from "./gateway";
@@ -27,6 +28,9 @@ export default {
     }
     if (pathname === "/telegram/webhook" && method === "POST") {
       return handleTelegramWebhook(request, env);
+    }
+    if (pathname === "/lark/webhook" && method === "POST") {
+      return handleLarkWebhook(request, env);
     }
     if (pathname === "/fin/webhook" && method === "POST") {
       return handleFinWebhook(request, env);

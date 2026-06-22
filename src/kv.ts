@@ -32,26 +32,37 @@ export async function putMapping(env: Env, mapping: IdentityMapping): Promise<vo
   await env.TG_FIN_STATE.put(`tg:${mapping.telegram_user_id}`, JSON.stringify(mapping));
 }
 
-export async function getConversationId(env: Env, tgUserId: string): Promise<string | null> {
-  return env.TG_FIN_STATE.get(`conv:${tgUserId}`);
+// --- channel identity -------------------------------------------------------
+/** The customer channels we bridge to Fin. */
+export type Channel = "telegram" | "lark";
+/** Identifies a customer: which channel + their id within that channel. */
+export interface UserRef {
+  channel: Channel;
+  cuid: string;
 }
 
-/** Stores both the forward (tg->conv) and reverse (conv->tg) mappings. */
-export async function linkConversation(env: Env, tgUserId: string, conversationId: string): Promise<void> {
+// --- Fin conversation per channel-user --------------------------------------
+
+export async function getFinConversation(env: Env, channel: Channel, cuid: string): Promise<string | null> {
+  return env.TG_FIN_STATE.get(`conv:${channel}:${cuid}`);
+}
+
+/** Stores both the forward (user->conv) and reverse (conv->user) mappings. */
+export async function linkFinConversation(env: Env, channel: Channel, cuid: string, conversationId: string): Promise<void> {
   await Promise.all([
-    env.TG_FIN_STATE.put(`conv:${tgUserId}`, conversationId),
-    env.TG_FIN_STATE.put(`fin:${conversationId}`, tgUserId),
+    env.TG_FIN_STATE.put(`conv:${channel}:${cuid}`, conversationId),
+    env.TG_FIN_STATE.put(`fin:${conversationId}`, JSON.stringify({ channel, cuid } satisfies UserRef)),
   ]);
 }
 
-export async function getTelegramByConversation(env: Env, conversationId: string): Promise<string | null> {
-  return env.TG_FIN_STATE.get(`fin:${conversationId}`);
+export async function getUserByFinConversation(env: Env, conversationId: string): Promise<UserRef | null> {
+  return env.TG_FIN_STATE.get<UserRef>(`fin:${conversationId}`, "json");
 }
 
 /** Forget a finished conversation so the user's next message starts a fresh one. */
-export async function clearConversation(env: Env, tgUserId: string, conversationId: string): Promise<void> {
+export async function clearFinConversation(env: Env, channel: Channel, cuid: string, conversationId: string): Promise<void> {
   await Promise.all([
-    env.TG_FIN_STATE.delete(`conv:${tgUserId}`),
+    env.TG_FIN_STATE.delete(`conv:${channel}:${cuid}`),
     env.TG_FIN_STATE.delete(`fin:${conversationId}`),
   ]);
 }
@@ -78,32 +89,32 @@ export interface Handoff {
   state: "open";
 }
 
-export async function getContactId(env: Env, tgUserId: string): Promise<string | null> {
-  return env.TG_FIN_STATE.get(`contact:${tgUserId}`);
+export async function getContactId(env: Env, channel: Channel, cuid: string): Promise<string | null> {
+  return env.TG_FIN_STATE.get(`contact:${channel}:${cuid}`);
 }
-export async function setContactId(env: Env, tgUserId: string, contactId: string): Promise<void> {
-  await env.TG_FIN_STATE.put(`contact:${tgUserId}`, contactId);
+export async function setContactId(env: Env, channel: Channel, cuid: string, contactId: string): Promise<void> {
+  await env.TG_FIN_STATE.put(`contact:${channel}:${cuid}`, contactId);
 }
-export async function clearContactId(env: Env, tgUserId: string): Promise<void> {
-  await env.TG_FIN_STATE.delete(`contact:${tgUserId}`);
+export async function clearContactId(env: Env, channel: Channel, cuid: string): Promise<void> {
+  await env.TG_FIN_STATE.delete(`contact:${channel}:${cuid}`);
 }
-export async function getHandoff(env: Env, tgUserId: string): Promise<Handoff | null> {
-  return env.TG_FIN_STATE.get<Handoff>(`handoff:${tgUserId}`, "json");
+export async function getHandoff(env: Env, channel: Channel, cuid: string): Promise<Handoff | null> {
+  return env.TG_FIN_STATE.get<Handoff>(`handoff:${channel}:${cuid}`, "json");
 }
-export async function setHandoff(env: Env, tgUserId: string, h: Handoff): Promise<void> {
+export async function setHandoff(env: Env, channel: Channel, cuid: string, h: Handoff): Promise<void> {
   await Promise.all([
-    env.TG_FIN_STATE.put(`handoff:${tgUserId}`, JSON.stringify(h)),
-    env.TG_FIN_STATE.put(`icid:${h.conversation_id}`, tgUserId),
+    env.TG_FIN_STATE.put(`handoff:${channel}:${cuid}`, JSON.stringify(h)),
+    env.TG_FIN_STATE.put(`icid:${h.conversation_id}`, JSON.stringify({ channel, cuid } satisfies UserRef)),
   ]);
 }
-export async function clearHandoff(env: Env, tgUserId: string, conversationId: string): Promise<void> {
+export async function clearHandoff(env: Env, channel: Channel, cuid: string, conversationId: string): Promise<void> {
   await Promise.all([
-    env.TG_FIN_STATE.delete(`handoff:${tgUserId}`),
+    env.TG_FIN_STATE.delete(`handoff:${channel}:${cuid}`),
     env.TG_FIN_STATE.delete(`icid:${conversationId}`),
   ]);
 }
-export async function getTelegramByIntercomConversation(env: Env, conversationId: string): Promise<string | null> {
-  return env.TG_FIN_STATE.get(`icid:${conversationId}`);
+export async function getUserByIntercomConversation(env: Env, conversationId: string): Promise<UserRef | null> {
+  return env.TG_FIN_STATE.get<UserRef>(`icid:${conversationId}`, "json");
 }
 
 // --- Lark escalation dedupe ------------------------------------------------
@@ -123,16 +134,28 @@ const TRANSCRIPT_MAX = 20;
 export type TranscriptEntry = { role: "customer" | "fin" | "agent"; text: string };
 
 /** Append a line to the per-user transcript (keeps the last TRANSCRIPT_MAX). */
-export async function appendTranscript(env: Env, tgUserId: string, role: TranscriptEntry["role"], text: string): Promise<void> {
-  const key = `transcript:${tgUserId}`;
+export async function appendTranscript(env: Env, channel: Channel, cuid: string, role: TranscriptEntry["role"], text: string): Promise<void> {
+  const key = `transcript:${channel}:${cuid}`;
   const cur = (await env.TG_FIN_STATE.get<TranscriptEntry[]>(key, "json")) ?? [];
   cur.push({ role, text });
   while (cur.length > TRANSCRIPT_MAX) cur.shift();
   await env.TG_FIN_STATE.put(key, JSON.stringify(cur), { expirationTtl: 7 * 24 * 60 * 60 });
 }
-export async function getTranscript(env: Env, tgUserId: string): Promise<TranscriptEntry[]> {
-  return (await env.TG_FIN_STATE.get<TranscriptEntry[]>(`transcript:${tgUserId}`, "json")) ?? [];
+export async function getTranscript(env: Env, channel: Channel, cuid: string): Promise<TranscriptEntry[]> {
+  return (await env.TG_FIN_STATE.get<TranscriptEntry[]>(`transcript:${channel}:${cuid}`, "json")) ?? [];
 }
-export async function clearTranscript(env: Env, tgUserId: string): Promise<void> {
-  await env.TG_FIN_STATE.delete(`transcript:${tgUserId}`);
+export async function clearTranscript(env: Env, channel: Channel, cuid: string): Promise<void> {
+  await env.TG_FIN_STATE.delete(`transcript:${channel}:${cuid}`);
+}
+
+// --- Lark tenant-access-token cache ----------------------------------------
+
+/** Returns the cached Lark tenant token if it's still valid (with 60s headroom). */
+export async function getCachedLarkToken(env: Env): Promise<string | null> {
+  const v = await env.TG_FIN_STATE.get<{ token: string; exp: number }>("lark_tenant_token", "json");
+  return v && v.exp > Math.floor(Date.now() / 1000) + 60 ? v.token : null;
+}
+export async function setCachedLarkToken(env: Env, token: string, sec: number): Promise<void> {
+  const exp = Math.floor(Date.now() / 1000) + sec;
+  await env.TG_FIN_STATE.put("lark_tenant_token", JSON.stringify({ token, exp }), { expirationTtl: sec });
 }

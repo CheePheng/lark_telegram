@@ -5,12 +5,13 @@
  *
  * Verified shapes (Intercom 2.14):
  *   POST /contacts                         {role:"user", external_id, name}
- *   POST /conversations                    {from:{type:"contact",id}, body}
+ *   POST /conversations                    {from:{type:"user",id}, body}
  *   POST /conversations/{id}/reply         {message_type:"comment", type:"user", intercom_user_id, body}
  */
 import type { Env } from "./env";
+import type { Channel } from "./kv";
 import { getContactId, setContactId, clearContactId, getHandoff, setHandoff, clearHandoff, getTranscript, type TranscriptEntry } from "./kv";
-import { sendTelegramMessage } from "./telegram";
+import { sendToChannel } from "./channels";
 
 function headers(env: Env): HeadersInit {
   return {
@@ -26,28 +27,36 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** Admin (Ask Ada) used to author the summary note and own the handoff conversation. */
 const HANDOFF_ADMIN_ID = "9114500";
 
-/** Return a cached contact id for the Telegram user, creating one if needed. */
-export async function ensureContact(env: Env, tgUserId: string): Promise<string> {
-  const cached = await getContactId(env, tgUserId);
+/** Human-friendly channel label and contact name. */
+function channelLabel(channel: Channel): string {
+  return channel === "telegram" ? "Telegram" : "Lark";
+}
+function contactName(channel: Channel): string {
+  return `IGaming ${channelLabel(channel)}`;
+}
+
+/** Return a cached contact id for the channel-user, creating one if needed. */
+export async function ensureContact(env: Env, channel: Channel, cuid: string): Promise<string> {
+  const cached = await getContactId(env, channel, cuid);
   if (cached) {
-    await renameContact(env, cached, "IGaming Telegram"); // keep the display name current
+    await renameContact(env, cached, contactName(channel)); // keep the display name current
     return cached;
   }
 
   const res = await fetch(`${env.INTERCOM_BASE_URL}/contacts`, {
     method: "POST",
     headers: headers(env),
-    body: JSON.stringify({ role: "user", external_id: `tg_${tgUserId}`, name: "IGaming Telegram" }),
+    body: JSON.stringify({ role: "user", external_id: `${channel}_${cuid}`, name: contactName(channel) }),
   });
 
   let id: string | null = null;
   if (res.ok) {
     id = ((await res.json()) as { id?: string }).id ?? null;
   } else {
-    id = await findContactByExternalId(env, `tg_${tgUserId}`); // probably already exists
+    id = await findContactByExternalId(env, `${channel}_${cuid}`); // probably already exists
   }
   if (!id) throw new Error(`ensureContact failed: ${res.status} ${await res.text().catch(() => "")}`);
-  await setContactId(env, tgUserId, id);
+  await setContactId(env, channel, cuid, id);
   return id;
 }
 
@@ -105,34 +114,34 @@ export async function replyAsUser(env: Env, conversationId: string, contactId: s
 }
 
 /** Enter human mode: reuse an open handoff, or open a new inbox conversation. */
-export async function startHandoff(env: Env, tgUserId: string, lastQuestion: string): Promise<void> {
-  const existing = await getHandoff(env, tgUserId);
+export async function startHandoff(env: Env, channel: Channel, cuid: string, lastQuestion: string): Promise<void> {
+  const existing = await getHandoff(env, channel, cuid);
   if (existing?.state === "open") {
     try {
       await replyAsUser(env, existing.conversation_id, existing.contact_id, "(Customer asked to speak with a human again.)");
-      await sendTelegramMessage(env, tgUserId, "You're already connected to our team — they'll reply here.");
+      await sendToChannel(env, channel, cuid, "You're already connected to our team — they'll reply here.");
       return;
     } catch {
-      await clearHandoff(env, tgUserId, existing.conversation_id); // stale (e.g. old workspace) -> open a fresh one
+      await clearHandoff(env, channel, cuid, existing.conversation_id); // stale (e.g. old workspace) -> open a fresh one
     }
   }
 
-  const transcript = await getTranscript(env, tgUserId);
-  const body = buildHandoffBody(transcript, lastQuestion);
-  let contactId = await ensureContact(env, tgUserId);
+  const transcript = await getTranscript(env, channel, cuid);
+  const body = buildHandoffBody(channel, transcript, lastQuestion);
+  let contactId = await ensureContact(env, channel, cuid);
   let conversationId: string;
   try {
     conversationId = await createConversation(env, contactId, body);
   } catch {
     // Cached contact may be stale (created in a different workspace) -> recreate and retry.
-    await clearContactId(env, tgUserId);
-    contactId = await ensureContact(env, tgUserId);
+    await clearContactId(env, channel, cuid);
+    contactId = await ensureContact(env, channel, cuid);
     conversationId = await createConversation(env, contactId, body);
   }
-  await setHandoff(env, tgUserId, { conversation_id: conversationId, contact_id: contactId, state: "open" });
+  await setHandoff(env, channel, cuid, { conversation_id: conversationId, contact_id: contactId, state: "open" });
   await addSummaryNote(env, conversationId, transcript);
   await assignConversation(env, conversationId, HANDOFF_ADMIN_ID); // so it lands in the agent's inbox
-  await sendTelegramMessage(env, tgUserId, "🔔 You're now connected to our team — an agent will reply right here.");
+  await sendToChannel(env, channel, cuid, "🔔 You're now connected to our team — an agent will reply right here.");
 }
 
 /** Assign the conversation to an admin so it shows in their "Your inbox". */
@@ -149,7 +158,7 @@ function escapeHtml(s: string): string {
 }
 
 /** A readable transcript seeded as the handoff conversation body, so the agent sees full context. */
-function buildHandoffBody(transcript: TranscriptEntry[], lastQuestion: string): string {
+function buildHandoffBody(channel: Channel, transcript: TranscriptEntry[], lastQuestion: string): string {
   const turns = transcript.length ? transcript : [{ role: "customer" as const, text: lastQuestion }];
   const rows = turns.map((t) => {
     const who = t.role === "customer" ? "🧑 Customer" : t.role === "fin" ? "🤖 Fin (AI)" : "👤 Agent";
@@ -157,7 +166,7 @@ function buildHandoffBody(transcript: TranscriptEntry[], lastQuestion: string): 
     return `<p><b>${who}</b><br>${text}</p>`;
   });
   return [
-    `<p>🔔 <b>Escalated from Telegram</b> — the customer asked to speak with a human.</p>`,
+    `<p>🔔 <b>Escalated from ${channelLabel(channel)}</b> — the customer asked to speak with a human.</p>`,
     `<p>──────── Conversation so far ────────</p>`,
     ...rows,
   ].join("");
@@ -168,7 +177,7 @@ async function addSummaryNote(env: Env, conversationId: string, transcript: Tran
   const customerMsgs = transcript.filter((t) => t.role === "customer").map((t) => t.text);
   const lastFin = [...transcript].reverse().find((t) => t.role === "fin")?.text;
   const note = [
-    `<p>📋 <b>Summary (auto, from Telegram)</b></p>`,
+    `<p>📋 <b>Summary (auto, from chat)</b></p>`,
     `<p><b>Question:</b> ${escapeHtml(customerMsgs[0] ?? "(unknown)")}</p>`,
     `<p><b>Customer messages:</b></p>`,
     `<ul>${(customerMsgs.length ? customerMsgs : ["(none)"]).map((m) => `<li>${escapeHtml(m)}</li>`).join("")}</ul>`,

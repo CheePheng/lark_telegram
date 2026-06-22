@@ -14,10 +14,13 @@
  * fin_replied webhook carries it straight back for routing.
  */
 import type { Env } from "./env";
+import type { Channel } from "./kv";
 import { hmacSha256Hex, hmacSha256HexBytes, hexToBytes, safeEqual } from "./crypto";
 
 export interface FinUserContext {
-  /** Stable id for this user across the conversation (we use the Telegram user id). */
+  /** Which customer channel this user is on. */
+  channel: Channel;
+  /** Stable id for this user across the conversation (the channel-specific user id). */
   userId: string;
   displayName?: string;
   memberId?: string;
@@ -58,7 +61,7 @@ export async function sendToFin(
     // ...but if Fin doesn't know it (e.g. after a workspace switch), start fresh.
     if (!replied.notFound) throw new Error(`Fin reply failed: ${replied.status} ${replied.detail}`);
   }
-  const newId = newConversationId(ctx.userId);
+  const newId = newConversationId(ctx);
   const started = await postFin(env, "/fin/start", newId, ctx, text);
   if (!started.ok) throw new Error(`Fin start failed: ${started.status} ${started.detail}`);
   return { conversationId: newId, intercomConversationId: started.intercomConversationId };
@@ -123,8 +126,8 @@ export async function verifyFinWebhookSignature(
 // Wire-format mapping (exact, per verified 2.14 spec). Same body for start/reply.
 // ===========================================================================
 
-function newConversationId(userId: string): string {
-  return `tg-${userId}-${Date.now()}`;
+function newConversationId(ctx: FinUserContext): string {
+  return `${ctx.channel}-${ctx.userId}-${Date.now()}`;
 }
 
 function buildRequestBody(conversationId: string, ctx: FinUserContext, text: string): Record<string, unknown> {
@@ -148,7 +151,7 @@ function attributesFor(ctx: FinUserContext): Record<string, unknown> {
     member_id: ctx.memberId ?? null,
     brand_id: ctx.brandId ?? null,
     language: ctx.language ?? null,
-    channel: "telegram",
+    channel: ctx.channel,
   };
 }
 

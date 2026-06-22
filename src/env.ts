@@ -24,6 +24,11 @@ export interface Env {
   INTERCOM_CLIENT_SECRET: string;
   LARK_WEBHOOK_URL: string;
   LARK_WEBHOOK_SECRET: string;
+
+  // Lark custom app (customer channel)
+  LARK_APP_ID: string;
+  LARK_APP_SECRET: string;
+  LARK_VERIFICATION_TOKEN: string;
 }
 
 export function allowUnverifiedChat(env: Env): boolean {

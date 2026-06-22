@@ -5,9 +5,9 @@
  * Verifies the X-Hub-Signature (HMAC-SHA1 of the raw body with the app client secret).
  */
 import type { Env } from "./env";
-import { getTelegramByIntercomConversation, clearHandoff } from "./kv";
+import { getUserByIntercomConversation, clearHandoff } from "./kv";
 import { htmlToPlainText } from "./html";
-import { sendTelegramMessage } from "./telegram";
+import { sendToChannel } from "./channels";
 
 interface ConversationPart {
   part_type?: string;
@@ -34,20 +34,20 @@ export async function handleIntercomWebhook(request: Request, env: Env): Promise
   const intercomId = String(convo?.id ?? "");
   if (!intercomId) return ok();
 
-  const tgUserId = await getTelegramByIntercomConversation(env, intercomId);
-  if (!tgUserId) return ok(); // not one of our bridged conversations
+  const ref = await getUserByIntercomConversation(env, intercomId);
+  if (!ref) return ok(); // not one of our bridged conversations
 
   if (topic === "conversation.admin.replied") {
     const parts: ConversationPart[] = convo?.conversation_parts?.conversation_parts ?? [];
     // Newest human-agent comment (skip the Fin bot, which is author.type "bot").
     const last = [...parts].reverse().find((p) => p.part_type === "comment" && p.author?.type === "admin");
-    if (last?.body) await sendTelegramMessage(env, tgUserId, `👤 ${htmlToPlainText(String(last.body))}`);
+    if (last?.body) await sendToChannel(env, ref.channel, ref.cuid, `👤 ${htmlToPlainText(String(last.body))}`);
     return ok();
   }
 
   if (topic === "conversation.admin.closed" || topic === "conversation.closed") {
-    await clearHandoff(env, tgUserId, intercomId);
-    await sendTelegramMessage(env, tgUserId, "✅ This support chat is closed. Ask me anything and Fin will help again.");
+    await clearHandoff(env, ref.channel, ref.cuid, intercomId);
+    await sendToChannel(env, ref.channel, ref.cuid, "✅ This support chat is closed. Ask me anything and Fin will help again.");
     return ok();
   }
 
