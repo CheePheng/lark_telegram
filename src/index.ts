@@ -34,7 +34,7 @@ export default {
     if (pathname === "/intercom/webhook" && method === "POST") {
       return handleIntercomWebhook(request, env);
     }
-    if (pathname === "/api/lark-task" && method === "POST") {
+    if (pathname === "/api/lark-task" && (method === "GET" || method === "POST")) {
       return handleLarkTask(request, env);
     }
     if (isGatewayPath(pathname)) {
