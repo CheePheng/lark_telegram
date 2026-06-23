@@ -13,6 +13,7 @@ import type { Channel } from "./kv";
 import {
   getContactId, setContactId, clearContactId, setHandoff, clearHandoff,
   getCanonicalConversation, setCanonicalConversation, clearCanonicalConversation, type CanonicalConversation,
+  getWorkflowConversation, setWorkflowConversation, clearWorkflowConversation,
 } from "./kv";
 import { sendToChannel } from "./channels";
 
@@ -222,4 +223,63 @@ export async function endHandoff(env: Env, channel: Channel, cuid: string): Prom
   await clearHandoff(env, channel, cuid);
   const canon = await getCanonicalConversation(env, channel, cuid);
   if (canon) await setCanonicalConversation(env, channel, cuid, { ...canon, state: "ai", updated_at: new Date().toISOString() });
+}
+
+// ===========================================================================
+// Workflow Bridge — the Lark/Telegram message IS a normal Intercom conversation.
+// We tag the contact with source_channel so an Intercom Workflow can target it
+// and let Fin answer in-thread. (Fin's own Fin-Agent-API thread is NOT used here.)
+// ===========================================================================
+
+/** Ensure a contact tagged with source_channel=<channel> so the Workflow audience matches. */
+export async function ensureWorkflowContact(env: Env, channel: Channel, cuid: string): Promise<string> {
+  const attrs = { custom_attributes: { source_channel: channel }, name: contactName(channel) };
+  const cached = await getContactId(env, channel, cuid);
+  if (cached) {
+    await fetch(`${env.INTERCOM_BASE_URL}/contacts/${cached}`, {
+      method: "PUT",
+      headers: headers(env),
+      body: JSON.stringify(attrs),
+    }).catch(() => {});
+    return cached;
+  }
+  const res = await fetch(`${env.INTERCOM_BASE_URL}/contacts`, {
+    method: "POST",
+    headers: headers(env),
+    body: JSON.stringify({ role: "user", external_id: `${channel}_${cuid}`, ...attrs }),
+  });
+  let id: string | null = null;
+  if (res.ok) id = ((await res.json()) as { id?: string }).id ?? null;
+  else id = await findContactByExternalId(env, `${channel}_${cuid}`);
+  if (!id) throw new Error(`ensureWorkflowContact failed: ${res.status} ${await res.text().catch(() => "")}`);
+  await setContactId(env, channel, cuid, id);
+  return id;
+}
+
+/** First message → create the conversation (Workflow + Fin engage). Later messages → reply as the contact. */
+export async function ensureWorkflowConversation(env: Env, channel: Channel, cuid: string, text: string): Promise<void> {
+  const existing = await getWorkflowConversation(env, channel, cuid);
+  if (existing) {
+    try {
+      await replyAsUser(env, existing.conversation_id, existing.contact_id, text); // reopens if it was closed
+      return;
+    } catch {
+      await clearWorkflowConversation(env, channel, cuid, existing.conversation_id); // gone -> recreate below
+    }
+  }
+  let contactId = await ensureWorkflowContact(env, channel, cuid);
+  let conversationId: string;
+  try {
+    conversationId = await createConversation(env, contactId, escapeHtml(text));
+  } catch {
+    // Cached contact may be stale (e.g. different workspace) -> recreate and retry.
+    await clearContactId(env, channel, cuid);
+    contactId = await ensureWorkflowContact(env, channel, cuid);
+    conversationId = await createConversation(env, contactId, escapeHtml(text));
+  }
+  await setWorkflowConversation(env, channel, cuid, {
+    conversation_id: conversationId,
+    contact_id: contactId,
+    updated_at: new Date().toISOString(),
+  });
 }
