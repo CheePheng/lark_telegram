@@ -15,6 +15,10 @@ INTERCOM_API_VERSION = "2.14"
 PUBLIC_BASE_URL = "https://tg-fin-bridge.askada.workers.dev"
 # Whether unverified Telegram users may chat with Fin for general FAQ (account data still requires verification).
 ALLOW_UNVERIFIED_CHAT = "true"
+# Intercom Workflow Bridge: which channels make their messages BECOME a normal Intercom
+# conversation (Conversations API + Workflow + Fin in-thread) instead of the Fin Agent API.
+# Values: "false" | "lark" | "telegram" | "lark,telegram" | "all".
+INTERCOM_WORKFLOW_BRIDGE = "false"
 
 # --- KV namespace ----------------------------------------------------------
 # Create with: wrangler kv namespace create tg_fin_state

@@ -3,6 +3,8 @@
  * - KV namespace + non-secret vars are declared in wrangler.toml.
  * - Secrets are injected via `wrangler secret put NAME` (or .dev.vars locally).
  */
+import type { Channel } from "./kv";
+
 export interface Env {
   // KV
   TG_FIN_STATE: KVNamespace;
@@ -12,6 +14,7 @@ export interface Env {
   INTERCOM_API_VERSION: string;
   PUBLIC_BASE_URL: string;
   ALLOW_UNVERIFIED_CHAT: string; // "true" | "false"
+  INTERCOM_WORKFLOW_BRIDGE: string; // "false" | "lark" | "telegram" | "lark,telegram" | "all"
 
   // Secrets
   TELEGRAM_BOT_TOKEN: string;
@@ -33,4 +36,11 @@ export interface Env {
 
 export function allowUnverifiedChat(env: Env): boolean {
   return (env.ALLOW_UNVERIFIED_CHAT ?? "true").toLowerCase() !== "false";
+}
+
+/** True if the Intercom Workflow Bridge is enabled for this channel. */
+export function workflowBridge(env: Env, channel: Channel): boolean {
+  const v = (env.INTERCOM_WORKFLOW_BRIDGE ?? "false").toLowerCase().trim();
+  if (v === "true" || v === "all") return true;
+  return v.split(",").map((s) => s.trim()).includes(channel);
 }
