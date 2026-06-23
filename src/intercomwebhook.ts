@@ -5,7 +5,8 @@
  * Verifies the X-Hub-Signature (HMAC-SHA1 of the raw body with the app client secret).
  */
 import type { Env } from "./env";
-import { getUserByIntercomConversation, alreadyRelayedPart } from "./kv";
+import { workflowBridge } from "./env";
+import { getUserByIntercomConversation, alreadyRelayedPart, clearWorkflowConversation } from "./kv";
 import { htmlToPlainText } from "./html";
 import { sendToChannel } from "./channels";
 import { endHandoff } from "./intercom";
@@ -41,7 +42,23 @@ export async function handleIntercomWebhook(request: Request, env: Env): Promise
 
   if (topic === "conversation.admin.replied") {
     const parts: ConversationPart[] = convo?.conversation_parts?.conversation_parts ?? [];
-    // Only relay a GENUINE human-agent comment. Everything we mirror is filtered out here:
+
+    if (workflowBridge(env, ref.channel)) {
+      // Workflow Bridge: relay every NEW Fin (bot) + agent (admin) comment, in order,
+      // deduped by part id. Skip the customer's own (author "user") and notes — no echo.
+      for (const p of parts) {
+        if (p.part_type !== "comment") continue;
+        const at = p.author?.type ?? "";
+        if (at !== "bot" && at !== "admin") continue;
+        if (!p.body) continue;
+        if (p.id && (await alreadyRelayedPart(env, p.id))) continue;
+        const prefix = at === "admin" ? "👤 " : ""; // Fin answers plain; human prefixed
+        await sendToChannel(env, ref.channel, ref.cuid, `${prefix}${htmlToPlainText(String(p.body))}`);
+      }
+      return ok();
+    }
+
+    // --- mirror/handoff mode (flag off): newest human-agent comment only ---
     // Fin answers + handoff notes are part_type "note"; customer mirrors are author "user";
     // the Fin bot is author "bot"; assignments aren't comments. So this is a real agent reply.
     const last = [...parts].reverse().find((p) => p.part_type === "comment" && p.author?.type === "admin");
@@ -53,10 +70,15 @@ export async function handleIntercomWebhook(request: Request, env: Env): Promise
   }
 
   if (topic === "conversation.admin.closed" || topic === "conversation.closed") {
-    // End human mode but KEEP the canonical conversation (and its icid mapping) so the
-    // customer's next message reuses it and they're back with Fin.
-    await endHandoff(env, ref.channel, ref.cuid);
-    await sendToChannel(env, ref.channel, ref.cuid, "✅ This support chat is closed. Ask me anything and Fin will help again.");
+    if (workflowBridge(env, ref.channel)) {
+      // Clear the mapping so the next customer message creates a fresh conversation
+      // (which re-triggers the "Customer sends their first message" Workflow).
+      await clearWorkflowConversation(env, ref.channel, ref.cuid, intercomId);
+    } else {
+      // End human mode but KEEP the canonical conversation so the next message reuses it.
+      await endHandoff(env, ref.channel, ref.cuid);
+    }
+    await sendToChannel(env, ref.channel, ref.cuid, "✅ This chat is closed. Send a new message and we'll be glad to help again.");
     return ok();
   }
 
