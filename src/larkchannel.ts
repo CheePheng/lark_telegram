@@ -8,7 +8,7 @@
  * Lark international (open.larksuite.com). Event schema v2, no Encrypt Key.
  */
 import type { Env } from "./env";
-import { getCachedLarkToken, setCachedLarkToken } from "./kv";
+import { getCachedLarkToken, setCachedLarkToken, alreadyProcessedEvent } from "./kv";
 import { routeInbound, resetChannel } from "./inbound";
 
 const LARK_BASE = "https://open.larksuite.com/open-apis";
@@ -43,14 +43,14 @@ interface LarkEvent {
   type?: string; // legacy "url_verification"
   challenge?: string;
   token?: string; // legacy token location
-  header?: { event_type?: string; token?: string };
+  header?: { event_type?: string; token?: string; event_id?: string };
   event?: {
     sender?: { sender_id?: { open_id?: string }; sender_type?: string };
     message?: { message_type?: string; content?: string; chat_type?: string };
   };
 }
 
-export async function handleLarkWebhook(request: Request, env: Env): Promise<Response> {
+export async function handleLarkWebhook(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const body = (await request.json().catch(() => null)) as LarkEvent | null;
   if (!body) return new Response("bad json", { status: 400 });
 
@@ -64,7 +64,11 @@ export async function handleLarkWebhook(request: Request, env: Env): Promise<Res
     return new Response("invalid token", { status: 401 });
   }
 
-  // 3) Inbound message.
+  // 3) De-dupe: Lark re-delivers an event if we don't ack within ~3s (retries reuse event_id).
+  const eventId = body.header?.event_id;
+  if (eventId && (await alreadyProcessedEvent(env, eventId))) return json({ code: 0 });
+
+  // 4) Inbound message — process in the background so we ACK Lark immediately (avoids retries).
   if (body.header?.event_type === "im.message.receive_v1") {
     const sender = body.event?.sender;
     const openId = sender?.sender_id?.open_id;
@@ -73,20 +77,25 @@ export async function handleLarkWebhook(request: Request, env: Env): Promise<Res
     if (openId && sender?.sender_type !== "app" && msg?.message_type === "text") {
       const text = (safeParse(msg.content) as { text?: string }).text?.trim() ?? "";
       const clean = stripMentions(text);
-      if (clean) {
-        if (/^\/(reset|new|clear)\b/i.test(clean)) {
-          await resetChannel(env, "lark", openId);
-          await sendLarkMessage(env, openId, "🔄 Fresh start — send a new message and we'll help again.");
-        } else if (/^\/start\b/i.test(clean)) {
-          await sendLarkMessage(env, openId, "👋 Hi! Ask me anything about KYC, deposits, or withdrawals. Type /reset to start over.");
-        } else {
-          await routeInbound(env, "lark", openId, clean);
-        }
-      }
+      if (clean) ctx.waitUntil(processLarkText(env, openId, clean));
     }
   }
 
   return json({ code: 0 });
+}
+
+/** Handle one inbound Lark text message (runs after we've already acked Lark). */
+async function processLarkText(env: Env, openId: string, clean: string): Promise<void> {
+  if (/^\/(reset|new|clear)\b/i.test(clean)) {
+    await resetChannel(env, "lark", openId);
+    await sendLarkMessage(env, openId, "🔄 Fresh start — send a new message and we'll help again.");
+    return;
+  }
+  if (/^\/start\b/i.test(clean)) {
+    await sendLarkMessage(env, openId, "👋 Hi! Ask me anything about KYC, deposits, or withdrawals. Type /reset to start over.");
+    return;
+  }
+  await routeInbound(env, "lark", openId, clean);
 }
 
 /** Lark prefixes @-mentions in group text as "@_user_1"; strip them for clean intent. */

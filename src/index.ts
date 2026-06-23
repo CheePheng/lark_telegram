@@ -30,7 +30,7 @@ export default {
       return handleTelegramWebhook(request, env);
     }
     if (pathname === "/lark/webhook" && method === "POST") {
-      return handleLarkWebhook(request, env);
+      return handleLarkWebhook(request, env, ctx);
     }
     if (pathname === "/fin/webhook" && method === "POST") {
       return handleFinWebhook(request, env);

@@ -187,6 +187,15 @@ export async function alreadyRelayedPart(env: Env, partId: string): Promise<bool
   return false;
 }
 
+/** True if this inbound channel event was already processed (records it if not).
+ *  De-dupes at-least-once webhook delivery (e.g. Lark re-sends if we ack slowly). */
+export async function alreadyProcessedEvent(env: Env, eventId: string): Promise<boolean> {
+  const k = `evt:${eventId}`;
+  if (await env.TG_FIN_STATE.get(k)) return true;
+  await env.TG_FIN_STATE.put(k, "1", { expirationTtl: PART_DEDUPE_TTL_SECONDS });
+  return false;
+}
+
 // --- Lark escalation dedupe ------------------------------------------------
 const LARK_DEDUPE_TTL_SECONDS = 24 * 60 * 60;
 
