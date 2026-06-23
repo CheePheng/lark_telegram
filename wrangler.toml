@@ -18,7 +18,7 @@ ALLOW_UNVERIFIED_CHAT = "true"
 # Intercom Workflow Bridge: which channels make their messages BECOME a normal Intercom
 # conversation (Conversations API + Workflow + Fin in-thread) instead of the Fin Agent API.
 # Values: "false" | "lark" | "telegram" | "lark,telegram" | "all".
-INTERCOM_WORKFLOW_BRIDGE = "false"
+INTERCOM_WORKFLOW_BRIDGE = "lark,telegram"
 
 # --- KV namespace ----------------------------------------------------------
 # Create with: wrangler kv namespace create tg_fin_state

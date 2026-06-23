@@ -8,11 +8,12 @@
  */
 import type { Env } from "./env";
 import { allowUnverifiedChat } from "./env";
-import { getMapping, putMapping } from "./kv";
+import { getMapping, putMapping, alreadyProcessedEvent } from "./kv";
 import { buildVerifyLink } from "./identity";
 import { routeInbound, resetChannel } from "./inbound";
 
 interface TelegramUpdate {
+  update_id?: number;
   message?: TelegramMessage;
   edited_message?: TelegramMessage;
 }
@@ -56,7 +57,7 @@ async function sendTyping(env: Env, chatId: string | number): Promise<void> {
   }).catch(() => {});
 }
 
-export async function handleTelegramWebhook(request: Request, env: Env): Promise<Response> {
+export async function handleTelegramWebhook(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (!verifyTelegramSecret(request, env)) return new Response("unauthorized", { status: 401 });
 
   const update = (await request.json().catch(() => null)) as TelegramUpdate | null;
@@ -67,20 +68,28 @@ export async function handleTelegramWebhook(request: Request, env: Env): Promise
   const cuid = String(msg.from?.id ?? msg.chat.id);
   const langCode = msg.from?.language_code;
 
+  // Dedupe at-least-once delivery, and ACK immediately — process in the background so long work
+  // (e.g. the workflow-bridge poll) never makes Telegram retry the webhook.
+  if (update?.update_id != null && (await alreadyProcessedEvent(env, `tg-${update.update_id}`))) return ok();
+  ctx.waitUntil(processTelegram(env, cuid, text, langCode));
+  return ok();
+}
+
+async function processTelegram(env: Env, cuid: string, text: string, langCode?: string): Promise<void> {
   try {
     if (text.startsWith("/start")) {
       await sendTelegramMessage(env, cuid, startMessage());
-      return ok();
+      return;
     }
     if (text.startsWith("/verify")) {
       const link = await buildVerifyLink(env, cuid);
       await sendTelegramMessage(env, cuid, `To view your account data, verify here:\n${link}`);
-      return ok();
+      return;
     }
     if (text.startsWith("/reset") || text.startsWith("/new") || text.startsWith("/clear")) {
       await resetChannel(env, CHANNEL, cuid);
       await sendTelegramMessage(env, cuid, "🔄 Fresh start — cleared our conversation (and any human chat). Ask me anything.");
-      return ok();
+      return;
     }
 
     // Persist detected language; optionally gate unverified users (dormant in demo).
@@ -101,7 +110,7 @@ export async function handleTelegramWebhook(request: Request, env: Env): Promise
     if (!verified && !allowUnverifiedChat(env)) {
       const link = await buildVerifyLink(env, cuid);
       await sendTelegramMessage(env, cuid, `Please verify your account first:\n${link}`);
-      return ok();
+      return;
     }
 
     await sendTyping(env, cuid);
@@ -110,7 +119,6 @@ export async function handleTelegramWebhook(request: Request, env: Env): Promise
     console.error("telegram handler error", err);
     await sendTelegramMessage(env, cuid, "Sorry — something went wrong. Please try again in a moment.").catch(() => {});
   }
-  return ok();
 }
 
 function startMessage(): string {

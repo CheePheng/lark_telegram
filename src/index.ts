@@ -27,7 +27,7 @@ export default {
       return new Response("tg-fin-bridge: ok", { status: 200 });
     }
     if (pathname === "/telegram/webhook" && method === "POST") {
-      return handleTelegramWebhook(request, env);
+      return handleTelegramWebhook(request, env, ctx);
     }
     if (pathname === "/lark/webhook" && method === "POST") {
       return handleLarkWebhook(request, env, ctx);
