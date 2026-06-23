@@ -9,7 +9,7 @@ import { workflowBridge } from "./env";
 import type { Channel } from "./kv";
 import {
   getHandoff, clearHandoff, getFinConversation, clearFinConversation, linkFinConversation,
-  getWorkflowConversation, clearWorkflowConversation, getCanonicalConversation, clearCanonicalConversation,
+  clearWorkflowForward, getCanonicalConversation, clearCanonicalConversation,
   appendTranscript, clearTranscript,
 } from "./kv";
 import { sendToFin, type FinUserContext } from "./fin";
@@ -44,8 +44,7 @@ export async function routeInbound(env: Env, channel: Channel, cuid: string, tex
 
 /** Full reset for a channel-user: clears all conversation state so the next message starts fresh. */
 export async function resetChannel(env: Env, channel: Channel, cuid: string): Promise<void> {
-  const wf = await getWorkflowConversation(env, channel, cuid);
-  if (wf) await clearWorkflowConversation(env, channel, cuid, wf.conversation_id);
+  await clearWorkflowForward(env, channel, cuid); // forward only; keep icid so in-flight replies still relay
   const handoff = await getHandoff(env, channel, cuid);
   if (handoff) await clearHandoff(env, channel, cuid);
   const conv = await getFinConversation(env, channel, cuid);

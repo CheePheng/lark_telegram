@@ -176,6 +176,12 @@ export async function clearWorkflowConversation(env: Env, channel: Channel, cuid
   ]);
 }
 
+/** Clear only the forward mapping (next message starts a fresh conversation) but KEEP `icid`,
+ *  so an in-flight Fin/agent reply to the old conversation can still be relayed. Used by /reset. */
+export async function clearWorkflowForward(env: Env, channel: Channel, cuid: string): Promise<void> {
+  await env.TG_FIN_STATE.delete(`wf:${channel}:${cuid}`);
+}
+
 // --- Intercom webhook dedupe (loop protection) -----------------------------
 const PART_DEDUPE_TTL_SECONDS = 24 * 60 * 60;
 
