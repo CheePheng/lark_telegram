@@ -1,25 +1,31 @@
-# Telegram ↔ Intercom Fin bridge (iGaming Phase 1)
+# Telegram + Lark ↔ Intercom Fin bridge (iGaming)
 
-A Cloudflare Worker that lets players chat with **Intercom Fin** over **Telegram**, with
-identity verification and live (mock) iGaming data lookups (KYC / deposit / withdrawal).
+A Cloudflare Worker that lets customers chat with **Intercom Fin** over **Telegram** and **Lark**,
+with identity verification, live (mock) iGaming data lookups (KYC / deposit / withdrawal), and
+two-way **human handoff** into the Intercom inbox.
 
-This is **Phase 1**: *demo now, prod-ready later*. iGaming data is **mocked**; the identity
-token/signature mechanics are real. **Lark is not included** in this phase.
+*Demo now, prod-ready later*: iGaming data is **mocked**; the identity token/signature mechanics
+are real. Both channels run on the **same** Fin Agent API + handoff model — the bridge is
+**channel-aware** (`{channel, cuid}`), so adding more channels is just another adapter.
 
 ```
-Player (Telegram)
+Customer (Telegram | Lark)
    │  message
    ▼
-Telegram Bot API ─► Cloudflare Worker  /telegram/webhook
-                         │ verified? if not → send a verify link
-                         │ call Intercom Fin  /fin/start | /fin/reply
+Telegram Bot API / Lark Open Platform ─► Cloudflare Worker  /telegram/webhook | /lark/webhook
+                         │ routeInbound: live human handoff open? → relay into Intercom
+                         │ else call Intercom Fin  /fin/start | /fin/reply
                          ▼
                     Intercom Fin (AI brain)
                          │ needs data → GET /api/kyc | /api/deposit | /api/withdrawal
                          │              (Worker returns masked, safe JSON from MOCK data)
                          │ answer ready → POST /fin/webhook  (signed)
                          ▼
-                    Cloudflare Worker ─► Telegram sendMessage ─► Player
+                    Cloudflare Worker ─► sendToChannel ─► back to the originating channel
+
+When Fin escalates AND the customer asked for a human:
+   startHandoff → opens an "IGaming <Channel>" inbox conversation (full transcript + summary
+   note, auto-assigned) → agent replies relay back to the channel via /intercom/webhook.
 ```
 
 ---
@@ -34,6 +40,12 @@ Telegram Bot API ─► Cloudflare Worker  /telegram/webhook
 | 4 | Intercom region | Your Intercom plan/region (US/EU/AU) | `INTERCOM_BASE_URL` (var) |
 | 5 | Intercom general API token (read+write Conversations & Contacts) | Intercom → Settings → API tokens, or a Developer Hub app's Access token | `INTERCOM_API_TOKEN` |
 | 6 | Developer Hub app **Client secret** (for human-handoff webhook signature) | Developer Hub → your app → Configure → Basic information | `INTERCOM_CLIENT_SECRET` |
+| 7 | Lark custom app **App ID** + **App Secret** | open.larksuite.com → Developer Console → your app → Credentials & Basic Info | `LARK_APP_ID`, `LARK_APP_SECRET` |
+| 8 | Lark **Verification Token** | your Lark app → Events & Callbacks → Encryption Strategy | `LARK_VERIFICATION_TOKEN` |
+
+> **Workspace consistency (important):** items 2/3 (Fin Agent API) and items 5/6 (general token +
+> client secret for handoff) **must come from the same Intercom workspace** — otherwise the Fin
+> conversation and the human-handoff conversation land in different inboxes.
 
 The following secrets you **generate yourself** (any long random string — see "Generate secrets" below):
 `TELEGRAM_WEBHOOK_SECRET`, `GATEWAY_API_TOKEN`, `IDENTITY_SIGNING_SECRET`.
@@ -131,6 +143,21 @@ https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=<PUBLIC_BASE_URL
 ```
 Expect `{"ok":true,...}`. Check anytime with `.../getWebhookInfo`.
 
+## Step E — Add the Lark channel (~15 min)
+Lark international (`open.larksuite.com`); for Feishu/China use `open.feishu.cn` and change `LARK_BASE` in `src/larkchannel.ts`.
+
+1. **open.larksuite.com** → Developer Console → **Create Custom App** (name it e.g. "Ask Ada"; set an avatar).
+2. **Add Features → Bot** (enable).
+3. **Permissions & Scopes** → add:
+   - `im:message` (read & send DMs/group),
+   - `im:message:send_as_bot` (send), and
+   - **`im:message.p2p_msg`** = *"Get direct messages sent to bot"* — **required** so DMs fire the event (the broad `im:message` alone does **not** satisfy the event's P2P delivery).
+4. **Events & Callbacks → Event Configuration** → Request URL `<PUBLIC_BASE_URL>/lark/webhook` (verifies instantly), subscribe **`im.message.receive_v1`**. Leave **Encrypt Key empty** (we expect plaintext); copy the **Verification Token** from the **Encryption Strategy** tab.
+5. **Version Management & Release** → create a version → **Release** (needs org-admin approval; scope/URL changes only take effect after a release is *live*).
+6. Set the secrets: `LARK_APP_ID`, `LARK_APP_SECRET`, `LARK_VERIFICATION_TOKEN`.
+
+> Tip: validate the app creds with `POST open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal` (`{app_id, app_secret}`) → expect `code: 0`.
+
 ---
 
 ## Test it (milestones)
@@ -138,7 +165,8 @@ Expect `{"ok":true,...}`. Check anytime with `.../getWebhookInfo`.
 - **M2 identity:** send `/verify` → open the link → pick a demo member → bot confirms “verified”. (Demo members: `300425`, `300999`.)
 - **M3 data:** as a verified user ask *"status of deposit DEP-260603-001?"* → Fin returns payment/posting/ETA with the account masked and no internal codes. An unverified user is asked to verify first.
 - **M4 demo script:** run the source doc's §12 script end-to-end, in English and 中文.
-- **M5 human handoff:** send *"I want to talk to a human"* → a `Telegram <id>` conversation opens in the inbox; agent replies reach Telegram (`👤`); player messages reach the inbox; closing it returns the player to Fin.
+- **M5 human handoff:** send *"I want to talk to a human"* → an `IGaming Telegram` conversation opens in the inbox (with context + summary note, auto-assigned); agent replies reach Telegram (`👤`); customer messages reach the inbox; closing it returns the customer to Fin.
+- **M6 Lark:** DM the Lark bot the same questions → Fin answers in Lark; *"talk to a human"* opens an `IGaming Lark` conversation and the same handoff round-trip works.
 
 Quick gateway check (without Fin), using your `GATEWAY_API_TOKEN`:
 ```powershell
@@ -154,20 +182,24 @@ npx wrangler dev
 ---
 
 ## Human handoff
-When Fin escalates (e.g. the player asks for a human), the Worker opens a **real Intercom inbox
-conversation** (named `Telegram <id>`) so an agent can take over:
+Fin escalates on its own when unsure; we only open a human handoff when the **customer explicitly
+asks for a human** (keyword intent in `finwebhook.ts` → `wantsHuman`). Then the Worker opens a
+**real, repliable Intercom inbox conversation** (named `IGaming Telegram` / `IGaming Lark`) so an
+agent can take over:
 
-- **Player → inbox:** while in handoff, the player's Telegram messages are posted into the inbox conversation.
-- **Agent → player:** the agent's inbox replies are relayed to Telegram (prefixed `👤`) via the standard `conversation.admin.replied` webhook (`/intercom/webhook`, X-Hub-Signature SHA1).
-- **End:** the agent **closing** the conversation (or the player sending `/reset`) returns the player to Fin.
-- **Lifecycle:** one open handoff per player; asking for a human again reuses the open conversation; after it's closed, a new escalation opens a fresh one.
+- **Context:** the handoff conversation is seeded with the **full prior transcript** (HTML, per-turn) plus an internal **summary note**, and is **auto-assigned** to the Ask Ada admin (lands in "Your inbox").
+- **Customer → inbox:** while in handoff, the customer's messages are posted into the inbox conversation.
+- **Agent → customer:** the agent's inbox replies are relayed back to the **originating channel** (prefixed `👤`) via the standard `conversation.admin.replied` webhook (`/intercom/webhook`, X-Hub-Signature SHA1).
+- **End:** the agent **closing** the conversation (or the customer sending `/reset`) returns the customer to Fin.
+- **Lifecycle:** one open handoff per customer; asking again reuses the open conversation; after it's closed, a new escalation opens a fresh one. Stale contacts/handoffs (e.g. after a workspace switch) self-heal.
 
-Note: Fin also keeps its own read-only copy of the chat in the inbox (named just `<id>`, "handled
-through an external system"). Reply in the **`Telegram <id>`** one — that's the bridged, repliable
-conversation.
+Note: Fin also keeps its own read-only copy in the inbox ("handled through an external system").
+Reply in the **`IGaming <Channel>`** conversation — that's the bridged, repliable one. (Intercom has
+no native Lark/Telegram channel, so a single unified native conversation isn't possible — this
+two-object model is the supported Fin-Agent-API + handoff pattern.)
 
-**Routes:** `/telegram/webhook`, `/fin/webhook`, `/intercom/webhook`, `/api/{kyc,deposit,withdrawal}`, `/verify`, `/verify/complete`.
-**Bot commands:** `/start`, `/verify`, `/reset`.
+**Routes:** `/telegram/webhook`, `/lark/webhook`, `/fin/webhook`, `/intercom/webhook`, `/api/{kyc,deposit,withdrawal}`, `/verify`, `/verify/complete`.
+**Telegram commands:** `/start`, `/verify`, `/reset`.
 
 ---
 
@@ -175,15 +207,18 @@ conversation.
 | File | Purpose |
 |---|---|
 | `src/index.ts` | Router / entry point |
-| `src/telegram.ts` | Telegram inbound + `sendTelegramMessage` |
+| `src/channels.ts` | `sendToChannel(channel, cuid, text)` — outbound dispatcher |
+| `src/inbound.ts` | `routeInbound` — channel-agnostic: live handoff relay, else forward to Fin |
+| `src/telegram.ts` | Telegram inbound (commands, verify gate) + `sendTelegramMessage` |
+| `src/larkchannel.ts` | Lark custom app: tenant token, `sendLarkMessage`, `/lark/webhook` events |
 | `src/fin.ts` | Fin Agent API client + webhook signature (verified against Intercom 2.14 spec + a live `200`) |
-| `src/finwebhook.ts` | Fin's `fin_replied` → Telegram; `escalated` → start human handoff |
-| `src/intercom.ts` | Intercom Conversations client + `startHandoff` (opens the inbox conversation) |
-| `src/intercomwebhook.ts` | Standard webhook: agent reply → Telegram; conversation closed → back to Fin |
+| `src/finwebhook.ts` | Fin's `fin_replied` → channel; `escalated` (+ explicit human request) → start handoff |
+| `src/intercom.ts` | Intercom Conversations client + `startHandoff` (context, summary note, auto-assign) |
+| `src/intercomwebhook.ts` | Standard webhook: agent reply → channel; conversation closed → back to Fin |
 | `src/gateway.ts` | iGaming data endpoints + masking + safe-reason mapping |
 | `src/identity.ts` | Mock signed-login + KV mapping |
 | `src/mockdata.ts` | Sample members + KYC/deposit/withdrawal records |
-| `src/kv.ts` | Typed KV helpers (identity, conversation, handoff state) |
+| `src/kv.ts` | Typed KV helpers — channel-keyed conversation/handoff/contact/transcript + Lark token cache |
 | `src/crypto.ts` / `src/html.ts` | HMAC/base64url + HTML→text helpers |
 
 ## Going to production later
@@ -191,6 +226,6 @@ conversation.
 - **Real identity:** replace the mock page in `src/identity.ts` with your real iGaming login that returns a signed token; verify that token in `/verify/complete` instead of trusting the form.
 - **Fin webhook signature:** `verifyFinWebhookSignature` in `src/fin.ts` assumes a hex HMAC-SHA256 of the raw body. If real webhook deliveries fail verification, check whether your workspace sends the signature base64-encoded and adjust there.
 
-## Not in this phase
-Lark escalation/tasks & status sync, real iGaming APIs, write operations, extra channels,
-advanced analytics. (See the project plan / source doc for the full roadmap.)
+## Not yet
+Real iGaming APIs (still mocked), write operations to core systems, advanced analytics, and any
+channels beyond Telegram + Lark. (See the project plan / source doc for the full roadmap.)
