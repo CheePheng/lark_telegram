@@ -13,9 +13,10 @@ import type { Channel } from "./kv";
 import {
   getContactId, setContactId, clearContactId, setHandoff, clearHandoff,
   getCanonicalConversation, setCanonicalConversation, clearCanonicalConversation, type CanonicalConversation,
-  getWorkflowConversation, setWorkflowConversation, clearWorkflowConversation,
+  getWorkflowConversation, setWorkflowConversation, clearWorkflowConversation, alreadyRelayedPart,
 } from "./kv";
 import { sendToChannel } from "./channels";
+import { htmlToPlainText } from "./html";
 
 function headers(env: Env): HeadersInit {
   return {
@@ -254,6 +255,33 @@ export async function ensureWorkflowContact(env: Env, channel: Channel, cuid: st
   if (!id) throw new Error(`ensureWorkflowContact failed: ${res.status} ${await res.text().catch(() => "")}`);
   await setContactId(env, channel, cuid, id);
   return id;
+}
+
+/** Poll the workflow conversation for new Fin (bot) / agent (admin) comments and relay them.
+ *  Needed because Fin's *bot* replies do NOT fire conversation.admin.replied (only human replies do).
+ *  Runs inside the inbound ctx.waitUntil, so a few seconds of polling is fine. Deduped with the
+ *  webhook via alreadyRelayedPart, so a human reply caught by both is still sent once. */
+export async function pollAndRelayWorkflow(env: Env, channel: Channel, cuid: string): Promise<void> {
+  const wf = await getWorkflowConversation(env, channel, cuid);
+  if (!wf) return;
+  for (let i = 0; i < 6; i++) {
+    await sleep(2500);
+    const res = await fetch(`${env.INTERCOM_BASE_URL}/conversations/${wf.conversation_id}?display_as=plaintext`, { headers: headers(env) });
+    if (!res.ok) continue;
+    const data = (await res.json()) as {
+      conversation_parts?: { conversation_parts?: Array<{ id?: string; part_type?: string; body?: string; author?: { type?: string } }> };
+    };
+    const parts = data.conversation_parts?.conversation_parts ?? [];
+    for (const p of parts) {
+      if (p.part_type !== "comment") continue;
+      const at = p.author?.type ?? "";
+      if (at !== "bot" && at !== "admin") continue;
+      if (!p.body) continue;
+      if (p.id && (await alreadyRelayedPart(env, p.id))) continue;
+      const prefix = at === "admin" ? "👤 " : ""; // Fin answers plain; human prefixed
+      await sendToChannel(env, channel, cuid, `${prefix}${htmlToPlainText(String(p.body))}`);
+    }
+  }
 }
 
 /** First message → create the conversation (Workflow + Fin engage). Later messages → reply as the contact. */

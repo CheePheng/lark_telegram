@@ -13,7 +13,7 @@ import {
   appendTranscript, clearTranscript,
 } from "./kv";
 import { sendToFin, type FinUserContext } from "./fin";
-import { mirrorCustomerToIntercom, ensureWorkflowConversation } from "./intercom";
+import { mirrorCustomerToIntercom, ensureWorkflowConversation, pollAndRelayWorkflow } from "./intercom";
 
 /** Friendly display name shown on the Intercom contact/conversation per channel. */
 const DISPLAY_NAME: Record<Channel, string> = {
@@ -27,6 +27,9 @@ export async function routeInbound(env: Env, channel: Channel, cuid: string, tex
   // + Fin answer inside it, and /intercom/webhook relays replies back. No Fin Agent API.
   if (workflowBridge(env, channel)) {
     await ensureWorkflowConversation(env, channel, cuid, text);
+    // Fin's bot reply doesn't fire a webhook, so poll the conversation and relay its answer.
+    // (We're already running inside the channel's ctx.waitUntil, so this can take a few seconds.)
+    await pollAndRelayWorkflow(env, channel, cuid);
     return;
   }
 
