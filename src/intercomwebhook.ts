@@ -71,13 +71,13 @@ export async function handleIntercomWebhook(request: Request, env: Env): Promise
 
   if (topic === "conversation.admin.closed" || topic === "conversation.closed") {
     if (workflowBridge(env, ref.channel)) {
-      // Clear the mapping so the next customer message creates a fresh conversation
-      // (which re-triggers the "Customer sends their first message" Workflow).
+      // Clear the mapping SILENTLY so the customer's next message starts a fresh conversation
+      // (re-triggers the Workflow). No "chat closed" message — avoids spamming the customer.
       await clearWorkflowConversation(env, ref.channel, ref.cuid, intercomId);
-    } else {
-      // End human mode but KEEP the canonical conversation so the next message reuses it.
-      await endHandoff(env, ref.channel, ref.cuid);
+      return ok();
     }
+    // Mirror/handoff mode: end human mode and let the customer know.
+    await endHandoff(env, ref.channel, ref.cuid);
     await sendToChannel(env, ref.channel, ref.cuid, "✅ This chat is closed. Send a new message and we'll be glad to help again.");
     return ok();
   }
