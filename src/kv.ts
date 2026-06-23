@@ -147,6 +147,35 @@ export async function clearCanonicalConversation(env: Env, channel: Channel, cui
   ]);
 }
 
+// --- workflow-bridge conversation -----------------------------------------
+// The Lark/Telegram message IS this Intercom conversation (created via the
+// Conversations API). An Intercom Workflow runs Fin inside it; agents reply in
+// it; we relay replies back. (Distinct from the canonical-mirror records.)
+export interface WorkflowConversation {
+  conversation_id: string;
+  contact_id: string;
+  updated_at: string;
+}
+
+export async function getWorkflowConversation(env: Env, channel: Channel, cuid: string): Promise<WorkflowConversation | null> {
+  return env.TG_FIN_STATE.get<WorkflowConversation>(`wf:${channel}:${cuid}`, "json");
+}
+
+/** Store the workflow conversation and keep the reverse `icid` lookup in sync. */
+export async function setWorkflowConversation(env: Env, channel: Channel, cuid: string, rec: WorkflowConversation): Promise<void> {
+  await Promise.all([
+    env.TG_FIN_STATE.put(`wf:${channel}:${cuid}`, JSON.stringify(rec)),
+    env.TG_FIN_STATE.put(`icid:${rec.conversation_id}`, JSON.stringify({ channel, cuid } satisfies UserRef)),
+  ]);
+}
+
+export async function clearWorkflowConversation(env: Env, channel: Channel, cuid: string, conversationId: string): Promise<void> {
+  await Promise.all([
+    env.TG_FIN_STATE.delete(`wf:${channel}:${cuid}`),
+    env.TG_FIN_STATE.delete(`icid:${conversationId}`),
+  ]);
+}
+
 // --- Intercom webhook dedupe (loop protection) -----------------------------
 const PART_DEDUPE_TTL_SECONDS = 24 * 60 * 60;
 
