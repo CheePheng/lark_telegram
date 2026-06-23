@@ -5,11 +5,13 @@
  * Verifies the X-Hub-Signature (HMAC-SHA1 of the raw body with the app client secret).
  */
 import type { Env } from "./env";
-import { getUserByIntercomConversation, clearHandoff } from "./kv";
+import { getUserByIntercomConversation, alreadyRelayedPart } from "./kv";
 import { htmlToPlainText } from "./html";
 import { sendToChannel } from "./channels";
+import { endHandoff } from "./intercom";
 
 interface ConversationPart {
+  id?: string;
   part_type?: string;
   body?: string;
   author?: { type?: string };
@@ -39,14 +41,21 @@ export async function handleIntercomWebhook(request: Request, env: Env): Promise
 
   if (topic === "conversation.admin.replied") {
     const parts: ConversationPart[] = convo?.conversation_parts?.conversation_parts ?? [];
-    // Newest human-agent comment (skip the Fin bot, which is author.type "bot").
+    // Only relay a GENUINE human-agent comment. Everything we mirror is filtered out here:
+    // Fin answers + handoff notes are part_type "note"; customer mirrors are author "user";
+    // the Fin bot is author "bot"; assignments aren't comments. So this is a real agent reply.
     const last = [...parts].reverse().find((p) => p.part_type === "comment" && p.author?.type === "admin");
-    if (last?.body) await sendToChannel(env, ref.channel, ref.cuid, `👤 ${htmlToPlainText(String(last.body))}`);
+    if (last?.body) {
+      if (last.id && (await alreadyRelayedPart(env, last.id))) return ok(); // dedupe Intercom webhook retries
+      await sendToChannel(env, ref.channel, ref.cuid, `👤 ${htmlToPlainText(String(last.body))}`);
+    }
     return ok();
   }
 
   if (topic === "conversation.admin.closed" || topic === "conversation.closed") {
-    await clearHandoff(env, ref.channel, ref.cuid, intercomId);
+    // End human mode but KEEP the canonical conversation (and its icid mapping) so the
+    // customer's next message reuses it and they're back with Fin.
+    await endHandoff(env, ref.channel, ref.cuid);
     await sendToChannel(env, ref.channel, ref.cuid, "✅ This support chat is closed. Ask me anything and Fin will help again.");
     return ok();
   }

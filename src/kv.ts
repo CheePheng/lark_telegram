@@ -101,20 +101,61 @@ export async function clearContactId(env: Env, channel: Channel, cuid: string): 
 export async function getHandoff(env: Env, channel: Channel, cuid: string): Promise<Handoff | null> {
   return env.TG_FIN_STATE.get<Handoff>(`handoff:${channel}:${cuid}`, "json");
 }
+// The reverse `icid:` lookup is owned by the canonical conversation
+// (set/cleared via set/clearCanonicalConversation). The handoff record is just an
+// "is a human handling this?" flag, so we do NOT touch `icid:` here — that keeps
+// agent replies routable even after a handoff ends.
 export async function setHandoff(env: Env, channel: Channel, cuid: string, h: Handoff): Promise<void> {
-  await Promise.all([
-    env.TG_FIN_STATE.put(`handoff:${channel}:${cuid}`, JSON.stringify(h)),
-    env.TG_FIN_STATE.put(`icid:${h.conversation_id}`, JSON.stringify({ channel, cuid } satisfies UserRef)),
-  ]);
+  await env.TG_FIN_STATE.put(`handoff:${channel}:${cuid}`, JSON.stringify(h));
 }
-export async function clearHandoff(env: Env, channel: Channel, cuid: string, conversationId: string): Promise<void> {
-  await Promise.all([
-    env.TG_FIN_STATE.delete(`handoff:${channel}:${cuid}`),
-    env.TG_FIN_STATE.delete(`icid:${conversationId}`),
-  ]);
+export async function clearHandoff(env: Env, channel: Channel, cuid: string): Promise<void> {
+  await env.TG_FIN_STATE.delete(`handoff:${channel}:${cuid}`);
 }
 export async function getUserByIntercomConversation(env: Env, conversationId: string): Promise<UserRef | null> {
   return env.TG_FIN_STATE.get<UserRef>(`icid:${conversationId}`, "json");
+}
+
+// --- canonical Intercom conversation ---------------------------------------
+// ONE replyable Intercom conversation per {channel, cuid} ("IGaming Lark" /
+// "IGaming Telegram"). Customer messages + Fin answers are mirrored into it so
+// the agent has full context in a single place. (Fin's own Fin-Agent-API thread
+// stays read-only "external system" — we never reply there; this is the
+// supported workaround.) `state` tracks our handling mode for that customer.
+export interface CanonicalConversation {
+  conversation_id: string;
+  contact_id: string;
+  state: "ai" | "human" | "closed";
+  updated_at: string;
+}
+
+export async function getCanonicalConversation(env: Env, channel: Channel, cuid: string): Promise<CanonicalConversation | null> {
+  return env.TG_FIN_STATE.get<CanonicalConversation>(`canonical:${channel}:${cuid}`, "json");
+}
+
+/** Store the canonical record and keep the reverse `icid` lookup in sync. */
+export async function setCanonicalConversation(env: Env, channel: Channel, cuid: string, rec: CanonicalConversation): Promise<void> {
+  await Promise.all([
+    env.TG_FIN_STATE.put(`canonical:${channel}:${cuid}`, JSON.stringify(rec)),
+    env.TG_FIN_STATE.put(`icid:${rec.conversation_id}`, JSON.stringify({ channel, cuid } satisfies UserRef)),
+  ]);
+}
+
+export async function clearCanonicalConversation(env: Env, channel: Channel, cuid: string, conversationId: string): Promise<void> {
+  await Promise.all([
+    env.TG_FIN_STATE.delete(`canonical:${channel}:${cuid}`),
+    env.TG_FIN_STATE.delete(`icid:${conversationId}`),
+  ]);
+}
+
+// --- Intercom webhook dedupe (loop protection) -----------------------------
+const PART_DEDUPE_TTL_SECONDS = 24 * 60 * 60;
+
+/** True if this Intercom conversation-part was already relayed (records it if not). */
+export async function alreadyRelayedPart(env: Env, partId: string): Promise<boolean> {
+  const k = `relayedpart:${partId}`;
+  if (await env.TG_FIN_STATE.get(k)) return true;
+  await env.TG_FIN_STATE.put(k, "1", { expirationTtl: PART_DEDUPE_TTL_SECONDS });
+  return false;
 }
 
 // --- Lark escalation dedupe ------------------------------------------------

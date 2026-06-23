@@ -79,7 +79,7 @@ export async function handleTelegramWebhook(request: Request, env: Env): Promise
     }
     if (text.startsWith("/reset") || text.startsWith("/new") || text.startsWith("/clear")) {
       const handoff = await getHandoff(env, CHANNEL, cuid);
-      if (handoff?.state === "open") await clearHandoff(env, CHANNEL, cuid, handoff.conversation_id);
+      if (handoff?.state === "open") await clearHandoff(env, CHANNEL, cuid);
       const convId = await getFinConversation(env, CHANNEL, cuid);
       if (convId) await clearFinConversation(env, CHANNEL, cuid, convId);
       await clearTranscript(env, CHANNEL, cuid);

@@ -8,7 +8,7 @@ import { parseFinWebhook, verifyFinWebhookSignature } from "./fin";
 import { getUserByFinConversation, clearFinConversation, appendTranscript, getTranscript } from "./kv";
 import { htmlToPlainText } from "./html";
 import { sendToChannel } from "./channels";
-import { startHandoff } from "./intercom";
+import { useCanonicalForHandoff, mirrorFinToIntercom } from "./intercom";
 
 export async function handleFinWebhook(request: Request, env: Env): Promise<Response> {
   const raw = await request.text();
@@ -36,7 +36,8 @@ export async function handleFinWebhook(request: Request, env: Env): Promise<Resp
     }
     const text = htmlToPlainText(event.replyHtml) || "(Fin sent an empty reply)";
     await appendTranscript(env, ref.channel, ref.cuid, "fin", text);
-    await sendToChannel(env, ref.channel, ref.cuid, text);
+    await sendToChannel(env, ref.channel, ref.cuid, text); // customer sees Fin's answer
+    await mirrorFinToIntercom(env, ref.channel, ref.cuid, text); // internal note in canonical (no echo)
     return ok();
   }
 
@@ -50,7 +51,9 @@ export async function handleFinWebhook(request: Request, env: Env): Promise<Resp
       const transcript = await getTranscript(env, ref.channel, ref.cuid);
       const lastCustomer = [...transcript].reverse().find((t) => t.role === "customer")?.text ?? "";
       if (wantsHuman(lastCustomer)) {
-        await startHandoff(env, ref.channel, ref.cuid, lastCustomer);
+        // Reuse the canonical "IGaming <Channel>" conversation as the handoff thread
+        // (no new conversation is created — it already has the full mirrored context).
+        await useCanonicalForHandoff(env, ref.channel, ref.cuid, lastCustomer);
         await clearFinConversation(env, ref.channel, ref.cuid, event.conversationId);
       } else {
         console.log("FIN_ESCALATION_IGNORED " + JSON.stringify({ lastCustomer }));

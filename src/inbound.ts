@@ -8,7 +8,7 @@ import type { Env } from "./env";
 import type { Channel } from "./kv";
 import { getHandoff, getFinConversation, linkFinConversation, appendTranscript } from "./kv";
 import { sendToFin, type FinUserContext } from "./fin";
-import { replyAsUser } from "./intercom";
+import { mirrorCustomerToIntercom } from "./intercom";
 
 /** Friendly display name shown on the Intercom contact/conversation per channel. */
 const DISPLAY_NAME: Record<Channel, string> = {
@@ -18,11 +18,14 @@ const DISPLAY_NAME: Record<Channel, string> = {
 
 /** Route one inbound customer message: live human handoff if open, else Fin. */
 export async function routeInbound(env: Env, channel: Channel, cuid: string, text: string, language?: string): Promise<void> {
+  // Mirror EVERY customer message into the canonical "IGaming <Channel>" conversation
+  // (posted as the contact, so it never triggers /intercom/webhook — no echo). In handoff
+  // mode this is how the agent sees the customer; in AI mode it keeps the agent's context full.
+  await mirrorCustomerToIntercom(env, channel, cuid, text);
+
   const handoff = await getHandoff(env, channel, cuid);
-  if (handoff?.state === "open") {
-    await replyAsUser(env, handoff.conversation_id, handoff.contact_id, text);
-    return;
-  }
+  if (handoff?.state === "open") return; // a human is handling -> do not also send to Fin
+
   await forwardToFin(env, channel, cuid, text, language);
 }
 

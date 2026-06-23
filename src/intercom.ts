@@ -10,7 +10,10 @@
  */
 import type { Env } from "./env";
 import type { Channel } from "./kv";
-import { getContactId, setContactId, clearContactId, getHandoff, setHandoff, clearHandoff, getTranscript, type TranscriptEntry } from "./kv";
+import {
+  getContactId, setContactId, clearContactId, setHandoff, clearHandoff,
+  getCanonicalConversation, setCanonicalConversation, clearCanonicalConversation, type CanonicalConversation,
+} from "./kv";
 import { sendToChannel } from "./channels";
 
 function headers(env: Env): HeadersInit {
@@ -113,37 +116,6 @@ export async function replyAsUser(env: Env, conversationId: string, contactId: s
   if (!res.ok) throw new Error(`replyAsUser failed: ${res.status} ${await res.text().catch(() => "")}`);
 }
 
-/** Enter human mode: reuse an open handoff, or open a new inbox conversation. */
-export async function startHandoff(env: Env, channel: Channel, cuid: string, lastQuestion: string): Promise<void> {
-  const existing = await getHandoff(env, channel, cuid);
-  if (existing?.state === "open") {
-    try {
-      await replyAsUser(env, existing.conversation_id, existing.contact_id, "(Customer asked to speak with a human again.)");
-      await sendToChannel(env, channel, cuid, "You're already connected to our team — they'll reply here.");
-      return;
-    } catch {
-      await clearHandoff(env, channel, cuid, existing.conversation_id); // stale (e.g. old workspace) -> open a fresh one
-    }
-  }
-
-  const transcript = await getTranscript(env, channel, cuid);
-  const body = buildHandoffBody(channel, transcript, lastQuestion);
-  let contactId = await ensureContact(env, channel, cuid);
-  let conversationId: string;
-  try {
-    conversationId = await createConversation(env, contactId, body);
-  } catch {
-    // Cached contact may be stale (created in a different workspace) -> recreate and retry.
-    await clearContactId(env, channel, cuid);
-    contactId = await ensureContact(env, channel, cuid);
-    conversationId = await createConversation(env, contactId, body);
-  }
-  await setHandoff(env, channel, cuid, { conversation_id: conversationId, contact_id: contactId, state: "open" });
-  await addSummaryNote(env, conversationId, transcript);
-  await assignConversation(env, conversationId, HANDOFF_ADMIN_ID); // so it lands in the agent's inbox
-  await sendToChannel(env, channel, cuid, "🔔 You're now connected to our team — an agent will reply right here.");
-}
-
 /** Assign the conversation to an admin so it shows in their "Your inbox". */
 async function assignConversation(env: Env, conversationId: string, adminId: string): Promise<void> {
   await fetch(`${env.INTERCOM_BASE_URL}/conversations/${conversationId}/parts`, {
@@ -157,37 +129,97 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-/** A readable transcript seeded as the handoff conversation body, so the agent sees full context. */
-function buildHandoffBody(channel: Channel, transcript: TranscriptEntry[], lastQuestion: string): string {
-  const turns = transcript.length ? transcript : [{ role: "customer" as const, text: lastQuestion }];
-  const rows = turns.map((t) => {
-    const who = t.role === "customer" ? "🧑 Customer" : t.role === "fin" ? "🤖 Fin (AI)" : "👤 Agent";
-    const text = escapeHtml(t.text).replace(/\n+/g, "<br>");
-    return `<p><b>${who}</b><br>${text}</p>`;
-  });
-  return [
-    `<p>🔔 <b>Escalated from ${channelLabel(channel)}</b> — the customer asked to speak with a human.</p>`,
-    `<p>──────── Conversation so far ────────</p>`,
-    ...rows,
-  ].join("");
-}
-
-/** Post an internal note summarising the conversation for the agent. */
-async function addSummaryNote(env: Env, conversationId: string, transcript: TranscriptEntry[]): Promise<void> {
-  const customerMsgs = transcript.filter((t) => t.role === "customer").map((t) => t.text);
-  const lastFin = [...transcript].reverse().find((t) => t.role === "fin")?.text;
-  const note = [
-    `<p>📋 <b>Summary (auto, from chat)</b></p>`,
-    `<p><b>Question:</b> ${escapeHtml(customerMsgs[0] ?? "(unknown)")}</p>`,
-    `<p><b>Customer messages:</b></p>`,
-    `<ul>${(customerMsgs.length ? customerMsgs : ["(none)"]).map((m) => `<li>${escapeHtml(m)}</li>`).join("")}</ul>`,
-    `<p><b>Fin's last answer:</b> ${lastFin ? escapeHtml(lastFin.slice(0, 300)) : "(none)"}</p>`,
-    `<p>⚠️ <b>Customer has requested a human agent.</b></p>`,
-  ].join("");
+/** Post an internal (admin-only) note. Notes are NOT `comment` parts, so they
+ *  never trigger conversation.admin.replied and are never relayed to the channel. */
+async function addNote(env: Env, conversationId: string, html: string): Promise<void> {
   const res = await fetch(`${env.INTERCOM_BASE_URL}/conversations/${conversationId}/reply`, {
     method: "POST",
     headers: headers(env),
-    body: JSON.stringify({ message_type: "note", type: "admin", admin_id: HANDOFF_ADMIN_ID, body: note }),
+    body: JSON.stringify({ message_type: "note", type: "admin", admin_id: HANDOFF_ADMIN_ID, body: html }),
   });
-  if (!res.ok) console.error(`addSummaryNote failed: ${res.status} ${await res.text().catch(() => "")}`);
+  if (!res.ok) console.error(`addNote failed: ${res.status} ${await res.text().catch(() => "")}`);
+}
+
+// ===========================================================================
+// Canonical conversation — the ONE replyable Intercom conversation per
+// {channel, cuid}. Customer messages + Fin answers are mirrored here so the
+// agent has full context and one place to reply. Fin's own Fin-Agent-API thread
+// stays read-only ("external system"); we never reply there — mirroring into the
+// canonical "IGaming <Channel>" conversation is the supported workaround.
+// ===========================================================================
+
+/** Create a fresh canonical conversation (self-healing a stale contact) and store it. */
+async function createCanonical(env: Env, channel: Channel, cuid: string, openingHtml: string): Promise<CanonicalConversation> {
+  let contactId = await ensureContact(env, channel, cuid);
+  let conversationId: string;
+  try {
+    conversationId = await createConversation(env, contactId, openingHtml);
+  } catch {
+    // Cached contact may be stale (e.g. created in a different workspace) -> recreate and retry.
+    await clearContactId(env, channel, cuid);
+    contactId = await ensureContact(env, channel, cuid);
+    conversationId = await createConversation(env, contactId, openingHtml);
+  }
+  const rec: CanonicalConversation = {
+    conversation_id: conversationId,
+    contact_id: contactId,
+    state: "ai",
+    updated_at: new Date().toISOString(),
+  };
+  await setCanonicalConversation(env, channel, cuid, rec);
+  return rec;
+}
+
+/** Return the canonical conversation, creating one if none exists yet. */
+export async function ensureCanonicalConversation(env: Env, channel: Channel, cuid: string, seedText?: string): Promise<CanonicalConversation> {
+  const existing = await getCanonicalConversation(env, channel, cuid);
+  if (existing) return existing;
+  const opening = seedText
+    ? escapeHtml(seedText)
+    : `Conversation mirrored from ${channelLabel(channel)}.`;
+  return createCanonical(env, channel, cuid, opening);
+}
+
+/** Mirror an inbound customer message into the canonical conversation (as the contact). */
+export async function mirrorCustomerToIntercom(env: Env, channel: Channel, cuid: string, text: string): Promise<void> {
+  const existing = await getCanonicalConversation(env, channel, cuid);
+  if (!existing) {
+    await createCanonical(env, channel, cuid, escapeHtml(text)); // first message becomes the opening
+    return;
+  }
+  try {
+    await replyAsUser(env, existing.conversation_id, existing.contact_id, text); // reopens if it was closed
+  } catch {
+    // Conversation deleted/unusable -> recreate with this message as the opening.
+    await clearCanonicalConversation(env, channel, cuid, existing.conversation_id);
+    await createCanonical(env, channel, cuid, escapeHtml(text));
+  }
+}
+
+/** Mirror a Fin answer into the canonical conversation as an internal note (never relayed back). */
+export async function mirrorFinToIntercom(env: Env, channel: Channel, cuid: string, text: string): Promise<void> {
+  const canon = await ensureCanonicalConversation(env, channel, cuid);
+  await addNote(env, canon.conversation_id, `<p>🤖 <b>Fin (AI)</b><br>${escapeHtml(text).replace(/\n+/g, "<br>")}</p>`);
+}
+
+/** Switch the canonical conversation into human mode: note + assign + open handoff. No new conversation. */
+export async function useCanonicalForHandoff(env: Env, channel: Channel, cuid: string, lastQuestion: string): Promise<void> {
+  const canon = await ensureCanonicalConversation(env, channel, cuid, lastQuestion);
+  await addNote(
+    env,
+    canon.conversation_id,
+    `<p>🙋 <b>Customer requested human support.</b><br>Reply in <b>this</b> conversation — your replies are sent back to ${channelLabel(channel)}. (Fin's AI answers above are internal notes.)</p>`,
+  );
+  await assignConversation(env, canon.conversation_id, HANDOFF_ADMIN_ID); // lands in the agent's inbox
+  await setHandoff(env, channel, cuid, { conversation_id: canon.conversation_id, contact_id: canon.contact_id, state: "open" });
+  await setCanonicalConversation(env, channel, cuid, { ...canon, state: "human", updated_at: new Date().toISOString() });
+  await sendToChannel(env, channel, cuid, "🔔 You're now connected to our team — an agent will reply right here.");
+}
+
+/** Agent closed the conversation: end human mode but KEEP the canonical conversation
+ *  (and its icid mapping) so the customer's next message reuses it back under Fin. */
+export async function endHandoff(env: Env, channel: Channel, cuid: string): Promise<void> {
+  await clearHandoff(env, channel, cuid);
+  const canon = await getCanonicalConversation(env, channel, cuid);
+  if (canon) await setCanonicalConversation(env, channel, cuid, { ...canon, state: "ai", updated_at: new Date().toISOString() });
 }
