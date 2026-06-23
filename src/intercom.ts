@@ -266,7 +266,9 @@ export async function pollAndRelayWorkflow(env: Env, channel: Channel, cuid: str
   if (!wf) return;
   for (let i = 0; i < 6; i++) {
     await sleep(2500);
-    const res = await fetch(`${env.INTERCOM_BASE_URL}/conversations/${wf.conversation_id}?display_as=plaintext`, { headers: headers(env) });
+    // NOTE: fetch the HTML body (no display_as=plaintext) so links survive as <a href> —
+    // htmlToPlainText turns them into "label (URL)" which Lark/Telegram auto-link.
+    const res = await fetch(`${env.INTERCOM_BASE_URL}/conversations/${wf.conversation_id}`, { headers: headers(env) });
     if (!res.ok) continue;
     const data = (await res.json()) as {
       conversation_parts?: { conversation_parts?: Array<{ id?: string; part_type?: string; body?: string; author?: { type?: string } }> };
