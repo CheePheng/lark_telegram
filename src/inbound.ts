@@ -7,7 +7,11 @@
 import type { Env } from "./env";
 import { workflowBridge } from "./env";
 import type { Channel } from "./kv";
-import { getHandoff, getFinConversation, linkFinConversation, appendTranscript } from "./kv";
+import {
+  getHandoff, clearHandoff, getFinConversation, clearFinConversation, linkFinConversation,
+  getWorkflowConversation, clearWorkflowConversation, getCanonicalConversation, clearCanonicalConversation,
+  appendTranscript, clearTranscript,
+} from "./kv";
 import { sendToFin, type FinUserContext } from "./fin";
 import { mirrorCustomerToIntercom, ensureWorkflowConversation } from "./intercom";
 
@@ -36,6 +40,19 @@ export async function routeInbound(env: Env, channel: Channel, cuid: string, tex
   if (handoff?.state === "open") return; // a human is handling -> do not also send to Fin
 
   await forwardToFin(env, channel, cuid, text, language);
+}
+
+/** Full reset for a channel-user: clears all conversation state so the next message starts fresh. */
+export async function resetChannel(env: Env, channel: Channel, cuid: string): Promise<void> {
+  const wf = await getWorkflowConversation(env, channel, cuid);
+  if (wf) await clearWorkflowConversation(env, channel, cuid, wf.conversation_id);
+  const handoff = await getHandoff(env, channel, cuid);
+  if (handoff) await clearHandoff(env, channel, cuid);
+  const conv = await getFinConversation(env, channel, cuid);
+  if (conv) await clearFinConversation(env, channel, cuid, conv);
+  const canon = await getCanonicalConversation(env, channel, cuid);
+  if (canon) await clearCanonicalConversation(env, channel, cuid, canon.conversation_id);
+  await clearTranscript(env, channel, cuid);
 }
 
 async function forwardToFin(env: Env, channel: Channel, cuid: string, text: string, language?: string): Promise<void> {

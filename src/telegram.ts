@@ -8,9 +8,9 @@
  */
 import type { Env } from "./env";
 import { allowUnverifiedChat } from "./env";
-import { getMapping, putMapping, getHandoff, clearHandoff, getFinConversation, clearFinConversation, clearTranscript } from "./kv";
+import { getMapping, putMapping } from "./kv";
 import { buildVerifyLink } from "./identity";
-import { routeInbound } from "./inbound";
+import { routeInbound, resetChannel } from "./inbound";
 
 interface TelegramUpdate {
   message?: TelegramMessage;
@@ -78,11 +78,7 @@ export async function handleTelegramWebhook(request: Request, env: Env): Promise
       return ok();
     }
     if (text.startsWith("/reset") || text.startsWith("/new") || text.startsWith("/clear")) {
-      const handoff = await getHandoff(env, CHANNEL, cuid);
-      if (handoff?.state === "open") await clearHandoff(env, CHANNEL, cuid);
-      const convId = await getFinConversation(env, CHANNEL, cuid);
-      if (convId) await clearFinConversation(env, CHANNEL, cuid, convId);
-      await clearTranscript(env, CHANNEL, cuid);
+      await resetChannel(env, CHANNEL, cuid);
       await sendTelegramMessage(env, cuid, "🔄 Fresh start — cleared our conversation (and any human chat). Ask me anything.");
       return ok();
     }

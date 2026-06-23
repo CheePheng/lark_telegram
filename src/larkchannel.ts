@@ -9,7 +9,7 @@
  */
 import type { Env } from "./env";
 import { getCachedLarkToken, setCachedLarkToken } from "./kv";
-import { routeInbound } from "./inbound";
+import { routeInbound, resetChannel } from "./inbound";
 
 const LARK_BASE = "https://open.larksuite.com/open-apis";
 
@@ -73,7 +73,16 @@ export async function handleLarkWebhook(request: Request, env: Env): Promise<Res
     if (openId && sender?.sender_type !== "app" && msg?.message_type === "text") {
       const text = (safeParse(msg.content) as { text?: string }).text?.trim() ?? "";
       const clean = stripMentions(text);
-      if (clean) await routeInbound(env, "lark", openId, clean);
+      if (clean) {
+        if (/^\/(reset|new|clear)\b/i.test(clean)) {
+          await resetChannel(env, "lark", openId);
+          await sendLarkMessage(env, openId, "🔄 Fresh start — send a new message and we'll help again.");
+        } else if (/^\/start\b/i.test(clean)) {
+          await sendLarkMessage(env, openId, "👋 Hi! Ask me anything about KYC, deposits, or withdrawals. Type /reset to start over.");
+        } else {
+          await routeInbound(env, "lark", openId, clean);
+        }
+      }
     }
   }
 
