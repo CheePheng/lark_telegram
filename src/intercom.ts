@@ -264,16 +264,22 @@ export async function ensureWorkflowContact(env: Env, channel: Channel, cuid: st
 export async function pollAndRelayWorkflow(env: Env, channel: Channel, cuid: string): Promise<void> {
   const wf = await getWorkflowConversation(env, channel, cuid);
   if (!wf) return;
-  for (let i = 0; i < 6; i++) {
-    await sleep(2500);
-    // NOTE: fetch the HTML body (no display_as=plaintext) so links survive as <a href> —
-    // htmlToPlainText turns them into "label (URL)" which Lark/Telegram auto-link.
+  // Fin often sends a quick ack, then "thinks" (ai_agent_event), then the real answer 15-25s
+  // later. Poll up to ~30s but stop early once Fin has been quiet for ~6s. Relay each new
+  // bot/admin comment as it appears (deduped). Fetch HTML so links survive as "label (URL)".
+  let quiet = 0;
+  for (let i = 0; i < 15 && quiet < 3; i++) {
+    await sleep(2000);
     const res = await fetch(`${env.INTERCOM_BASE_URL}/conversations/${wf.conversation_id}`, { headers: headers(env) });
-    if (!res.ok) continue;
+    if (!res.ok) {
+      quiet++;
+      continue;
+    }
     const data = (await res.json()) as {
       conversation_parts?: { conversation_parts?: Array<{ id?: string; part_type?: string; body?: string; author?: { type?: string } }> };
     };
     const parts = data.conversation_parts?.conversation_parts ?? [];
+    let relayed = false;
     for (const p of parts) {
       if (p.part_type !== "comment") continue;
       const at = p.author?.type ?? "";
@@ -282,7 +288,9 @@ export async function pollAndRelayWorkflow(env: Env, channel: Channel, cuid: str
       if (p.id && (await alreadyRelayedPart(env, p.id))) continue;
       const prefix = at === "admin" ? "👤 " : ""; // Fin answers plain; human prefixed
       await sendToChannel(env, channel, cuid, `${prefix}${htmlToPlainText(String(p.body))}`);
+      relayed = true;
     }
+    quiet = relayed ? 0 : quiet + 1;
   }
 }
 
