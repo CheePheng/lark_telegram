@@ -6,7 +6,7 @@
  */
 import type { Env } from "./env";
 import { workflowBridge } from "./env";
-import { getUserByIntercomConversation, alreadyRelayedPart, clearWorkflowConversation } from "./kv";
+import { getUserByIntercomConversation, alreadyRelayedPart } from "./kv";
 import { htmlToPlainText } from "./html";
 import { sendToChannel } from "./channels";
 import { endHandoff } from "./intercom";
@@ -71,9 +71,9 @@ export async function handleIntercomWebhook(request: Request, env: Env): Promise
 
   if (topic === "conversation.admin.closed" || topic === "conversation.closed") {
     if (workflowBridge(env, ref.channel)) {
-      // Clear the mapping SILENTLY so the customer's next message starts a fresh conversation
-      // (re-triggers the Workflow). No "chat closed" message — avoids spamming the customer.
-      await clearWorkflowConversation(env, ref.channel, ref.cuid, intercomId);
+      // Do NOT clear the mapping here. The next inbound message checks whether the conversation
+      // is still open: if open it's reused (one conversation per customer); if closed, a fresh
+      // one is started. This keeps a customer's follow-ups in ONE conversation.
       return ok();
     }
     // Mirror/handoff mode: end human mode and let the customer know.

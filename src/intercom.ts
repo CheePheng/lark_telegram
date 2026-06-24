@@ -286,15 +286,28 @@ export async function pollAndRelayWorkflow(env: Env, channel: Channel, cuid: str
   }
 }
 
-/** First message → create the conversation (Workflow + Fin engage). Later messages → reply as the contact. */
+async function isConversationOpen(env: Env, conversationId: string): Promise<boolean> {
+  const res = await fetch(`${env.INTERCOM_BASE_URL}/conversations/${conversationId}`, { headers: headers(env) });
+  if (!res.ok) return false;
+  const d = (await res.json()) as { open?: boolean; state?: string };
+  return d.open === true || d.state === "open";
+}
+
+/** First message → create the conversation (Workflow + Fin engage). Later messages → reuse the
+ *  SAME conversation while it's open (Fin keeps handling it); only start a fresh one if it's been
+ *  closed/resolved (so the Workflow re-triggers) or after /reset. */
 export async function ensureWorkflowConversation(env: Env, channel: Channel, cuid: string, text: string): Promise<void> {
   const existing = await getWorkflowConversation(env, channel, cuid);
   if (existing) {
-    try {
-      await replyAsUser(env, existing.conversation_id, existing.contact_id, text); // reopens if it was closed
-      return;
-    } catch {
-      await clearWorkflowConversation(env, channel, cuid, existing.conversation_id); // gone -> recreate below
+    if (await isConversationOpen(env, existing.conversation_id)) {
+      try {
+        await replyAsUser(env, existing.conversation_id, existing.contact_id, text);
+        return;
+      } catch {
+        await clearWorkflowConversation(env, channel, cuid, existing.conversation_id);
+      }
+    } else {
+      await clearWorkflowConversation(env, channel, cuid, existing.conversation_id); // closed -> fresh below
     }
   }
   let contactId = await ensureWorkflowContact(env, channel, cuid);
