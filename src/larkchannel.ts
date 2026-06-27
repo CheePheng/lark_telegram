@@ -8,9 +8,9 @@
  * Lark international (open.larksuite.com). Event schema v2, no Encrypt Key.
  */
 import type { Env } from "./env";
-import { getCachedLarkToken, setCachedLarkToken, alreadyProcessedEvent } from "./kv";
+import { getCachedLarkToken, setCachedLarkToken, alreadyProcessedEvent, setBrand } from "./kv";
 import { routeInbound, resetChannel } from "./inbound";
-import { BRAND_OPTIONS, BRAND_PROMPT } from "./brands";
+import { BRAND_OPTIONS, BRAND_PROMPT, brandByKey } from "./brands";
 
 const LARK_BASE = "https://open.larksuite.com/open-apis";
 
@@ -79,6 +79,19 @@ interface LarkEvent {
   };
 }
 
+interface LarkCardCallback {
+  type?: string; // "url_verification"
+  challenge?: string;
+  token?: string; // v1 token location
+  open_id?: string; // v1: who tapped
+  action?: { value?: { brand_key?: string }; tag?: string }; // v1: button payload
+  header?: { token?: string; event_id?: string };
+  event?: {
+    operator?: { open_id?: string };
+    action?: { value?: { brand_key?: string } };
+  };
+}
+
 export async function handleLarkWebhook(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const body = (await request.json().catch(() => null)) as LarkEvent | null;
   if (!body) return new Response("bad json", { status: 400 });
@@ -111,6 +124,49 @@ export async function handleLarkWebhook(request: Request, env: Env, ctx: Executi
   }
 
   return json({ code: 0 });
+}
+
+/**
+ * Card-action callback (interactive card button tap). Lark delivers these to a
+ * SEPARATE URL from message events, as `card.action.trigger`. We accept both the
+ * legacy shape (open_id + action.value at the top level) and the v2 shape
+ * (header.event_type + event.operator.open_id + event.action.value) defensively.
+ */
+export async function handleLarkCardCallback(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  const body = (await request.json().catch(() => null)) as LarkCardCallback | null;
+  if (!body) return new Response("bad json", { status: 400 });
+
+  // 1) URL verification handshake (sent when you set the card callback URL).
+  if (body.type === "url_verification") return json({ challenge: body.challenge });
+
+  // 2) Verify the verification token (v1 top-level, v2 in header).
+  const token = body.token ?? body.header?.token;
+  if (token !== env.LARK_VERIFICATION_TOKEN) {
+    console.warn("LARK_CARD_TOKEN_FAIL");
+    return new Response("invalid token", { status: 401 });
+  }
+
+  // 3) De-dupe retries (only the v2 shape carries an event_id).
+  const eventId = body.header?.event_id;
+  if (eventId && (await alreadyProcessedEvent(env, `card-${eventId}`))) return json({});
+
+  // 4) Extract who tapped + which brand. Ack fast; do the work in the background.
+  const openId = body.open_id ?? body.event?.operator?.open_id;
+  const value = body.action?.value ?? body.event?.action?.value ?? {};
+  const brand = brandByKey(value.brand_key ?? "");
+  if (openId && brand) {
+    ctx.waitUntil(
+      (async () => {
+        await setBrand(env, "lark", openId, brand.value);
+        await sendLarkMessage(
+          env,
+          openId,
+          `✅ 已选择 ${brand.label}。请问有什么可以帮您？ / Selected ${brand.label} — how can I help?`,
+        );
+      })(),
+    );
+  }
+  return json({});
 }
 
 /** Handle one inbound Lark text message (runs after we've already acked Lark). */
