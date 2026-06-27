@@ -17,6 +17,7 @@ import {
 } from "./kv";
 import { sendToChannel } from "./channels";
 import { htmlToPlainText } from "./html";
+import { brandByValue } from "./brands";
 
 function headers(env: Env): HeadersInit {
   return {
@@ -338,4 +339,10 @@ export async function ensureWorkflowConversation(env: Env, channel: Channel, cui
     contact_id: contactId,
     updated_at: new Date().toISOString(),
   });
+  // Surface the customer's brand choice to agents (the selection happens in the channel,
+  // before this conversation exists, so it'd otherwise be invisible in the inbox).
+  if (brand) {
+    const label = brandByValue(brand)?.label ?? brand;
+    await addNote(env, conversationId, `🏷️ <b>Customer selected brand:</b> ${escapeHtml(label)}`).catch(() => {});
+  }
 }

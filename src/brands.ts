@@ -21,3 +21,7 @@ export const BRAND_PROMPT = "请选择您想咨询的品牌 / Please select the 
 export function brandByKey(key: string): BrandOption | undefined {
   return BRAND_OPTIONS.find((b) => b.key === key);
 }
+
+export function brandByValue(value: string): BrandOption | undefined {
+  return BRAND_OPTIONS.find((b) => b.value === value);
+}

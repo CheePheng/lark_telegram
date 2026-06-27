@@ -9,7 +9,7 @@
  *   GET  /                   health check
  */
 import type { Env } from "./env";
-import { handleTelegramWebhook } from "./telegram";
+import { handleTelegramWebhook, setTelegramWebhook } from "./telegram";
 import { handleLarkWebhook } from "./larkchannel";
 import { handleFinWebhook } from "./finwebhook";
 import { handleIntercomWebhook } from "./intercomwebhook";
@@ -28,6 +28,11 @@ export default {
     }
     if (pathname === "/telegram/webhook" && method === "POST") {
       return handleTelegramWebhook(request, env, ctx);
+    }
+    // One-off admin: re-register the Telegram webhook (enables button taps). Guarded by GATEWAY_API_TOKEN.
+    if (pathname === "/admin/tg-webhook" && method === "GET") {
+      if (url.searchParams.get("key") !== env.GATEWAY_API_TOKEN) return new Response("unauthorized", { status: 401 });
+      return setTelegramWebhook(env);
     }
     if (pathname === "/lark/webhook" && method === "POST") {
       return handleLarkWebhook(request, env, ctx);

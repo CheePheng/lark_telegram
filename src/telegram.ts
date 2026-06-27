@@ -59,6 +59,23 @@ async function sendTyping(env: Env, chatId: string | number): Promise<void> {
   }).catch(() => {});
 }
 
+/** One-off admin: (re)register the Telegram webhook WITH callback_query (button taps) enabled. */
+export async function setTelegramWebhook(env: Env): Promise<Response> {
+  const base = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}`;
+  const setRes = await fetch(`${base}/setWebhook`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      url: `${env.PUBLIC_BASE_URL}/telegram/webhook`,
+      secret_token: env.TELEGRAM_WEBHOOK_SECRET,
+      allowed_updates: ["message", "edited_message", "callback_query"],
+    }),
+  });
+  const set = await setRes.json().catch(() => ({}));
+  const info = await (await fetch(`${base}/getWebhookInfo`)).json().catch(() => ({}));
+  return new Response(JSON.stringify({ set, info }, null, 2), { headers: { "Content-Type": "application/json" } });
+}
+
 /** Send the brand picker as a Telegram inline keyboard (one button per row). */
 export async function sendTelegramBrandSelection(env: Env, chatId: string | number): Promise<void> {
   const reply_markup = {
