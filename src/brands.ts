@@ -11,8 +11,8 @@ export interface BrandOption {
 }
 
 export const BRAND_OPTIONS: BrandOption[] = [
-  { key: "igaming", value: "DKM-IGAMING", label: "网络博彩 / IGaming" },
-  { key: "b2bprovider", value: "B2B Provider", label: "B2B 供应商 / B2B Provider" },
+  { key: "igaming", value: "DKM-IGAMING", label: "IGaming" },
+  { key: "b2bprovider", value: "B2B Provider", label: "B2B Provider" },
   { key: "payflow", value: "B2B Payment", label: "PayFlow" },
 ];
 
