@@ -17,6 +17,8 @@ import { handleGateway, isGatewayPath } from "./gateway";
 import { handleLarkTask } from "./larktask";
 import { handleVerifyPage, handleVerifyComplete } from "./identity";
 
+export { BrandSessionDO } from "./brandsession";
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);

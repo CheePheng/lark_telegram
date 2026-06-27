@@ -22,6 +22,15 @@ INTERCOM_WORKFLOW_BRIDGE = "lark,telegram"
 # Brand selection: ask the customer to pick a brand (buttons) before routing. Same value format.
 BRAND_SELECT = "telegram,lark"
 
+# --- Durable Object: strongly-consistent brand selection -------------------
+[[durable_objects.bindings]]
+name = "BRAND_SESSION"
+class_name = "BrandSessionDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["BrandSessionDO"]
+
 # --- KV namespace ----------------------------------------------------------
 # Create with: wrangler kv namespace create tg_fin_state
 # Then paste the returned id below (and a preview_id for `wrangler dev`).

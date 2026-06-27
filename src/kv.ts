@@ -183,14 +183,27 @@ export async function clearWorkflowForward(env: Env, channel: Channel, cuid: str
 }
 
 // --- brand selection (sticky per customer until /reset) --------------------
+// Stored in a Durable Object (strongly consistent) so a card tap is ALWAYS visible
+// to the customer's next message. KV is eventually consistent: the tap write and the
+// next message's read are separate webhook requests that can hit different edges, so
+// the read raced the write and the picker re-appeared. Keyed by {channel}:{cuid}.
+function brandStub(env: Env, channel: Channel, cuid: string): DurableObjectStub {
+  const id = env.BRAND_SESSION.idFromName(`${channel}:${cuid}`);
+  return env.BRAND_SESSION.get(id);
+}
 export async function getBrand(env: Env, channel: Channel, cuid: string): Promise<string | null> {
-  return env.TG_FIN_STATE.get(`brand:${channel}:${cuid}`);
+  const res = await brandStub(env, channel, cuid).fetch("https://brand-session/", { method: "GET" });
+  const { brand } = (await res.json()) as { brand: string | null };
+  return brand;
 }
 export async function setBrand(env: Env, channel: Channel, cuid: string, value: string): Promise<void> {
-  await env.TG_FIN_STATE.put(`brand:${channel}:${cuid}`, value);
+  await brandStub(env, channel, cuid).fetch("https://brand-session/", {
+    method: "PUT",
+    body: JSON.stringify({ brand: value }),
+  });
 }
 export async function clearBrand(env: Env, channel: Channel, cuid: string): Promise<void> {
-  await env.TG_FIN_STATE.delete(`brand:${channel}:${cuid}`);
+  await brandStub(env, channel, cuid).fetch("https://brand-session/", { method: "DELETE" });
 }
 
 // --- Intercom webhook dedupe (loop protection) -----------------------------

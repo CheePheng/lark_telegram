@@ -9,6 +9,9 @@ export interface Env {
   // KV
   TG_FIN_STATE: KVNamespace;
 
+  // Durable Object: strongly-consistent brand selection (see brandsession.ts)
+  BRAND_SESSION: DurableObjectNamespace;
+
   // Public vars (wrangler.toml [vars])
   INTERCOM_BASE_URL: string;
   INTERCOM_API_VERSION: string;
