@@ -233,8 +233,10 @@ export async function endHandoff(env: Env, channel: Channel, cuid: string): Prom
 // ===========================================================================
 
 /** Ensure a contact tagged with source_channel=<channel> so the Workflow audience matches. */
-export async function ensureWorkflowContact(env: Env, channel: Channel, cuid: string): Promise<string> {
-  const attrs = { custom_attributes: { source_channel: channel }, name: contactName(channel) };
+export async function ensureWorkflowContact(env: Env, channel: Channel, cuid: string, brand?: string): Promise<string> {
+  const custom_attributes: Record<string, string> = { source_channel: channel };
+  if (brand) custom_attributes.Brand = brand; // drives the Workflow's "Brand is …" branches
+  const attrs = { custom_attributes, name: contactName(channel) };
   const cached = await getContactId(env, channel, cuid);
   if (cached) {
     await fetch(`${env.INTERCOM_BASE_URL}/contacts/${cached}`, {
@@ -307,7 +309,7 @@ async function isConversationOpen(env: Env, conversationId: string): Promise<boo
 /** First message → create the conversation (Workflow + Fin engage). Later messages → reuse the
  *  SAME conversation while it's open (Fin keeps handling it); only start a fresh one if it's been
  *  closed/resolved (so the Workflow re-triggers) or after /reset. */
-export async function ensureWorkflowConversation(env: Env, channel: Channel, cuid: string, text: string): Promise<void> {
+export async function ensureWorkflowConversation(env: Env, channel: Channel, cuid: string, text: string, brand?: string): Promise<void> {
   const existing = await getWorkflowConversation(env, channel, cuid);
   if (existing) {
     if (await isConversationOpen(env, existing.conversation_id)) {
@@ -321,14 +323,14 @@ export async function ensureWorkflowConversation(env: Env, channel: Channel, cui
       await clearWorkflowConversation(env, channel, cuid, existing.conversation_id); // closed -> fresh below
     }
   }
-  let contactId = await ensureWorkflowContact(env, channel, cuid);
+  let contactId = await ensureWorkflowContact(env, channel, cuid, brand);
   let conversationId: string;
   try {
     conversationId = await createConversation(env, contactId, escapeHtml(text));
   } catch {
     // Cached contact may be stale (e.g. different workspace) -> recreate and retry.
     await clearContactId(env, channel, cuid);
-    contactId = await ensureWorkflowContact(env, channel, cuid);
+    contactId = await ensureWorkflowContact(env, channel, cuid, brand);
     conversationId = await createConversation(env, contactId, escapeHtml(text));
   }
   await setWorkflowConversation(env, channel, cuid, {

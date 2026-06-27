@@ -8,14 +8,16 @@
  */
 import type { Env } from "./env";
 import { allowUnverifiedChat } from "./env";
-import { getMapping, putMapping, alreadyProcessedEvent } from "./kv";
+import { getMapping, putMapping, alreadyProcessedEvent, setBrand } from "./kv";
 import { buildVerifyLink } from "./identity";
 import { routeInbound, resetChannel } from "./inbound";
+import { BRAND_OPTIONS, BRAND_PROMPT, brandByKey } from "./brands";
 
 interface TelegramUpdate {
   update_id?: number;
   message?: TelegramMessage;
   edited_message?: TelegramMessage;
+  callback_query?: { id: string; from?: { id: number }; data?: string };
 }
 interface TelegramMessage {
   message_id: number;
@@ -57,10 +59,46 @@ async function sendTyping(env: Env, chatId: string | number): Promise<void> {
   }).catch(() => {});
 }
 
+/** Send the brand picker as a Telegram inline keyboard (one button per row). */
+export async function sendTelegramBrandSelection(env: Env, chatId: string | number): Promise<void> {
+  const reply_markup = {
+    inline_keyboard: BRAND_OPTIONS.map((b) => [{ text: b.label, callback_data: `brand:${b.key}` }]),
+  };
+  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, text: BRAND_PROMPT, reply_markup }),
+  }).catch(() => {});
+}
+
+/** Handle a brand button tap: store the choice, ack the button, confirm to the customer. */
+async function processTelegramCallback(env: Env, cuid: string, callbackId: string, data: string): Promise<void> {
+  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ callback_query_id: callbackId }),
+  }).catch(() => {});
+
+  const brand = brandByKey(/^brand:(.+)$/.exec(data)?.[1] ?? "");
+  if (!brand) return;
+  await setBrand(env, CHANNEL, cuid, brand.value);
+  await sendTelegramMessage(env, cuid, `✅ 已选择 ${brand.label}。请问有什么可以帮您？ / Selected ${brand.label} — how can I help?`);
+}
+
 export async function handleTelegramWebhook(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (!verifyTelegramSecret(request, env)) return new Response("unauthorized", { status: 401 });
 
   const update = (await request.json().catch(() => null)) as TelegramUpdate | null;
+
+  // Brand-selection button tap (inline keyboard) — arrives as callback_query, not a message.
+  const cq = update?.callback_query;
+  if (cq) {
+    if (update?.update_id != null && (await alreadyProcessedEvent(env, `tg-${update.update_id}`))) return ok();
+    const cbCuid = String(cq.from?.id ?? "");
+    if (cbCuid && cq.data) ctx.waitUntil(processTelegramCallback(env, cbCuid, cq.id, cq.data));
+    return ok();
+  }
+
   const msg = update?.message ?? update?.edited_message;
   const text = msg?.text?.trim();
   if (!msg || !text) return ok(); // ignore non-text updates

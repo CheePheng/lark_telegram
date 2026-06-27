@@ -19,6 +19,8 @@ ALLOW_UNVERIFIED_CHAT = "true"
 # conversation (Conversations API + Workflow + Fin in-thread) instead of the Fin Agent API.
 # Values: "false" | "lark" | "telegram" | "lark,telegram" | "all".
 INTERCOM_WORKFLOW_BRIDGE = "lark,telegram"
+# Brand selection: ask the customer to pick a brand (buttons) before routing. Same value format.
+BRAND_SELECT = "telegram"
 
 # --- KV namespace ----------------------------------------------------------
 # Create with: wrangler kv namespace create tg_fin_state

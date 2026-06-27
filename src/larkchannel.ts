@@ -10,6 +10,7 @@
 import type { Env } from "./env";
 import { getCachedLarkToken, setCachedLarkToken, alreadyProcessedEvent } from "./kv";
 import { routeInbound, resetChannel } from "./inbound";
+import { BRAND_OPTIONS, BRAND_PROMPT } from "./brands";
 
 const LARK_BASE = "https://open.larksuite.com/open-apis";
 
@@ -37,6 +38,34 @@ export async function sendLarkMessage(env: Env, openId: string, text: string): P
   });
   const d = (await res.json().catch(() => ({}))) as { code?: number; msg?: string };
   if (d.code !== 0) console.error(`Lark send failed: ${JSON.stringify(d)}`);
+}
+
+/** Send the brand picker as a Lark interactive card. Button taps arrive as a card
+ *  action callback (handled separately once the card callback URL is configured). */
+export async function sendLarkBrandSelection(env: Env, openId: string): Promise<void> {
+  const token = await tenantToken(env);
+  const card = {
+    config: { wide_screen_mode: true },
+    elements: [
+      { tag: "div", text: { tag: "lark_md", content: BRAND_PROMPT } },
+      {
+        tag: "action",
+        actions: BRAND_OPTIONS.map((b) => ({
+          tag: "button",
+          text: { tag: "plain_text", content: b.label },
+          type: "primary",
+          value: { brand_key: b.key },
+        })),
+      },
+    ],
+  };
+  const res = await fetch(`${LARK_BASE}/im/v1/messages?receive_id_type=open_id`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ receive_id: openId, msg_type: "interactive", content: JSON.stringify(card) }),
+  });
+  const d = (await res.json().catch(() => ({}))) as { code?: number };
+  if (d.code !== 0) console.error(`Lark card send failed: ${JSON.stringify(d)}`);
 }
 
 interface LarkEvent {

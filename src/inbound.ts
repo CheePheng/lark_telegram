@@ -5,15 +5,16 @@
  * /fin/webhook and is sent back on the originating channel.
  */
 import type { Env } from "./env";
-import { workflowBridge } from "./env";
+import { workflowBridge, brandSelect } from "./env";
 import type { Channel } from "./kv";
 import {
   getHandoff, clearHandoff, getFinConversation, clearFinConversation, linkFinConversation,
   clearWorkflowForward, getCanonicalConversation, clearCanonicalConversation,
-  appendTranscript, clearTranscript,
+  getBrand, clearBrand, appendTranscript, clearTranscript,
 } from "./kv";
 import { sendToFin, type FinUserContext } from "./fin";
 import { mirrorCustomerToIntercom, ensureWorkflowConversation, pollAndRelayWorkflow } from "./intercom";
+import { sendBrandSelection } from "./channels";
 
 /** Friendly display name shown on the Intercom contact/conversation per channel. */
 const DISPLAY_NAME: Record<Channel, string> = {
@@ -26,7 +27,18 @@ export async function routeInbound(env: Env, channel: Channel, cuid: string, tex
   // Workflow Bridge: the message IS the Intercom conversation; an Intercom Workflow
   // + Fin answer inside it, and /intercom/webhook relays replies back. No Fin Agent API.
   if (workflowBridge(env, channel)) {
-    await ensureWorkflowConversation(env, channel, cuid, text);
+    let brand: string | undefined;
+    if (brandSelect(env, channel)) {
+      const chosen = await getBrand(env, channel, cuid);
+      if (!chosen) {
+        // No brand yet -> ask the customer to pick one (buttons). The choice is captured by the
+        // channel's button-callback handler, which stores it; the next message proceeds below.
+        await sendBrandSelection(env, channel, cuid);
+        return;
+      }
+      brand = chosen;
+    }
+    await ensureWorkflowConversation(env, channel, cuid, text, brand);
     // Fin's bot reply doesn't fire a webhook, so poll the conversation and relay its answer.
     // (We're already running inside the channel's ctx.waitUntil, so this can take a few seconds.)
     await pollAndRelayWorkflow(env, channel, cuid);
@@ -54,6 +66,7 @@ export async function resetChannel(env: Env, channel: Channel, cuid: string): Pr
   if (conv) await clearFinConversation(env, channel, cuid, conv);
   const canon = await getCanonicalConversation(env, channel, cuid);
   if (canon) await clearCanonicalConversation(env, channel, cuid, canon.conversation_id);
+  await clearBrand(env, channel, cuid); // next message re-asks for the brand
   await clearTranscript(env, channel, cuid);
 }
 

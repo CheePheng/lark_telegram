@@ -182,6 +182,17 @@ export async function clearWorkflowForward(env: Env, channel: Channel, cuid: str
   await env.TG_FIN_STATE.delete(`wf:${channel}:${cuid}`);
 }
 
+// --- brand selection (sticky per customer until /reset) --------------------
+export async function getBrand(env: Env, channel: Channel, cuid: string): Promise<string | null> {
+  return env.TG_FIN_STATE.get(`brand:${channel}:${cuid}`);
+}
+export async function setBrand(env: Env, channel: Channel, cuid: string, value: string): Promise<void> {
+  await env.TG_FIN_STATE.put(`brand:${channel}:${cuid}`, value);
+}
+export async function clearBrand(env: Env, channel: Channel, cuid: string): Promise<void> {
+  await env.TG_FIN_STATE.delete(`brand:${channel}:${cuid}`);
+}
+
 // --- Intercom webhook dedupe (loop protection) -----------------------------
 const PART_DEDUPE_TTL_SECONDS = 24 * 60 * 60;
 

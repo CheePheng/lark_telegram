@@ -15,6 +15,7 @@ export interface Env {
   PUBLIC_BASE_URL: string;
   ALLOW_UNVERIFIED_CHAT: string; // "true" | "false"
   INTERCOM_WORKFLOW_BRIDGE: string; // "false" | "lark" | "telegram" | "lark,telegram" | "all"
+  BRAND_SELECT: string; // "false" | "lark" | "telegram" | "lark,telegram" | "all"
 
   // Secrets
   TELEGRAM_BOT_TOKEN: string;
@@ -40,7 +41,16 @@ export function allowUnverifiedChat(env: Env): boolean {
 
 /** True if the Intercom Workflow Bridge is enabled for this channel. */
 export function workflowBridge(env: Env, channel: Channel): boolean {
-  const v = (env.INTERCOM_WORKFLOW_BRIDGE ?? "false").toLowerCase().trim();
+  return channelFlag(env.INTERCOM_WORKFLOW_BRIDGE, channel);
+}
+
+/** True if brand selection (ask the customer to pick a brand first) is enabled for this channel. */
+export function brandSelect(env: Env, channel: Channel): boolean {
+  return channelFlag(env.BRAND_SELECT, channel);
+}
+
+function channelFlag(raw: string | undefined, channel: Channel): boolean {
+  const v = (raw ?? "false").toLowerCase().trim();
   if (v === "true" || v === "all") return true;
   return v.split(",").map((s) => s.trim()).includes(channel);
 }
