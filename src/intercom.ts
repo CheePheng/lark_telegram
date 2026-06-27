@@ -235,7 +235,7 @@ export async function endHandoff(env: Env, channel: Channel, cuid: string): Prom
 /** Ensure a contact tagged with source_channel=<channel> so the Workflow audience matches. */
 export async function ensureWorkflowContact(env: Env, channel: Channel, cuid: string, brand?: string): Promise<string> {
   const custom_attributes: Record<string, string> = { source_channel: channel };
-  if (brand) custom_attributes.Brand = brand; // drives the Workflow's "Brand is …" branches
+  if (brand) custom_attributes.brand_id = brand; // People attribute that drives the Workflow's "brand_id is …" branches
   const attrs = { custom_attributes, name: contactName(channel) };
   const cached = await getContactId(env, channel, cuid);
   if (cached) {
