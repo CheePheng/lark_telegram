@@ -13,6 +13,7 @@ import { handleTelegramWebhook, setTelegramWebhook } from "./telegram";
 import { handleLarkWebhook, handleLarkCardCallback } from "./larkchannel";
 import { handleFinWebhook } from "./finwebhook";
 import { handleIntercomWebhook } from "./intercomwebhook";
+import { adminGetConversation } from "./intercom";
 import { handleGateway, isGatewayPath } from "./gateway";
 import { handleLarkTask } from "./larktask";
 import { handleVerifyPage, handleVerifyComplete } from "./identity";
@@ -35,6 +36,10 @@ export default {
     if (pathname === "/admin/tg-webhook" && method === "GET") {
       if (url.searchParams.get("key") !== env.GATEWAY_API_TOKEN) return new Response("unauthorized", { status: 401 });
       return setTelegramWebhook(env);
+    }
+    if (pathname === "/admin/conv" && method === "GET") {
+      if (url.searchParams.get("key") !== env.GATEWAY_API_TOKEN) return new Response("unauthorized", { status: 401 });
+      return adminGetConversation(env, url.searchParams.get("id") ?? "");
     }
     if (pathname === "/lark/webhook" && method === "POST") {
       return handleLarkWebhook(request, env, ctx);
