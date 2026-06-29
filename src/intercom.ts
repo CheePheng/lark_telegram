@@ -119,6 +119,21 @@ export async function replyAsUser(env: Env, conversationId: string, contactId: s
   if (!res.ok) throw new Error(`replyAsUser failed: ${res.status} ${await res.text().catch(() => "")}`);
 }
 
+/** Conversation Data Attribute (user-defined CvDA) holding the customer's chosen brand,
+ *  so it shows in the inbox "Conversation attributes" and is reportable. The native "Brand"
+ *  field is system-managed and rejects API writes, so we use this custom attribute instead. */
+const CUSTOMER_BRAND_ATTR = "Customer Brand";
+
+/** Set a user-defined conversation data attribute (the CvDA must exist, or Intercom 400s). */
+async function setConversationAttribute(env: Env, conversationId: string, key: string, value: string): Promise<void> {
+  const res = await fetch(`${env.INTERCOM_BASE_URL}/conversations/${conversationId}`, {
+    method: "PUT",
+    headers: headers(env),
+    body: JSON.stringify({ custom_attributes: { [key]: value } }),
+  });
+  if (!res.ok) console.error(`setConversationAttribute(${key}) failed: ${res.status} ${await res.text().catch(() => "")}`);
+}
+
 /** Admin/debug: return a conversation's raw JSON (to inspect how attributes like Brand are stored). */
 export async function adminGetConversation(env: Env, id: string): Promise<Response> {
   const res = await fetch(`${env.INTERCOM_BASE_URL}/conversations/${id}`, { headers: headers(env) });
@@ -351,5 +366,7 @@ export async function ensureWorkflowConversation(env: Env, channel: Channel, cui
   if (brand) {
     const label = brandByValue(brand)?.label ?? brand;
     await addNote(env, conversationId, `🏷️ <b>Customer selected brand:</b> ${escapeHtml(label)}`).catch(() => {});
+    // Mirror the choice into the custom "Customer Brand" attribute (shows in the inbox + reports).
+    await setConversationAttribute(env, conversationId, CUSTOMER_BRAND_ATTR, brand).catch(() => {});
   }
 }
