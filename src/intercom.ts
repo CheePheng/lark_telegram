@@ -119,17 +119,6 @@ export async function replyAsUser(env: Env, conversationId: string, contactId: s
   if (!res.ok) throw new Error(`replyAsUser failed: ${res.status} ${await res.text().catch(() => "")}`);
 }
 
-/** Set the conversation's "Brand" data attribute — the editable dropdown agents see and
- *  reports filter on. Value must match a Brand option (DKM-IGAMING / B2B Provider / B2B Payment). */
-async function setConversationBrand(env: Env, conversationId: string, brand: string): Promise<void> {
-  const res = await fetch(`${env.INTERCOM_BASE_URL}/conversations/${conversationId}`, {
-    method: "PUT",
-    headers: headers(env),
-    body: JSON.stringify({ custom_attributes: { Brand: brand } }),
-  });
-  if (!res.ok) console.error(`setConversationBrand failed: ${res.status} ${await res.text().catch(() => "")}`);
-}
-
 /** Admin/debug: return a conversation's raw JSON (to inspect how attributes like Brand are stored). */
 export async function adminGetConversation(env: Env, id: string): Promise<Response> {
   const res = await fetch(`${env.INTERCOM_BASE_URL}/conversations/${id}`, { headers: headers(env) });
@@ -362,7 +351,5 @@ export async function ensureWorkflowConversation(env: Env, channel: Channel, cui
   if (brand) {
     const label = brandByValue(brand)?.label ?? brand;
     await addNote(env, conversationId, `🏷️ <b>Customer selected brand:</b> ${escapeHtml(label)}`).catch(() => {});
-    // Set the visible Brand conversation attribute so agents + reports see the chosen brand.
-    await setConversationBrand(env, conversationId, brand).catch(() => {});
   }
 }
