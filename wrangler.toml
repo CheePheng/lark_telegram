@@ -20,7 +20,8 @@ ALLOW_UNVERIFIED_CHAT = "true"
 # Values: "false" | "lark" | "telegram" | "lark,telegram" | "all".
 INTERCOM_WORKFLOW_BRIDGE = "lark,telegram"
 # Brand selection: ask the customer to pick a brand (buttons) before routing. Same value format.
-BRAND_SELECT = "telegram,lark"
+# Disabled — boss wants the plain Lark/Telegram -> one Intercom conversation -> Fin/human demo.
+BRAND_SELECT = "false"
 
 # --- Durable Object: strongly-consistent brand selection -------------------
 [[durable_objects.bindings]]
