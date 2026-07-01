@@ -40,6 +40,39 @@ export async function sendLarkMessage(env: Env, openId: string, text: string): P
   if (d.code !== 0) console.error(`Lark send failed: ${JSON.stringify(d)}`);
 }
 
+/** Relay an image to a Lark user: download it from the URL, upload to Lark for an
+ *  image_key (Lark can't send images by URL), then send it as an image message. */
+export async function sendLarkImage(env: Env, openId: string, url: string): Promise<void> {
+  const token = await tenantToken(env);
+  const img = await fetch(url);
+  if (!img.ok) {
+    console.error(`Lark image download failed: ${img.status}`);
+    return;
+  }
+  const blob = await img.blob();
+  const form = new FormData();
+  form.append("image_type", "message");
+  form.append("image", blob, "image.png");
+  const up = await fetch(`${LARK_BASE}/im/v1/images`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` }, // let FormData set the multipart Content-Type
+    body: form,
+  });
+  const upd = (await up.json().catch(() => ({}))) as { code?: number; data?: { image_key?: string } };
+  const imageKey = upd.data?.image_key;
+  if (!imageKey) {
+    console.error(`Lark image upload failed: ${JSON.stringify(upd)}`);
+    return;
+  }
+  const res = await fetch(`${LARK_BASE}/im/v1/messages?receive_id_type=open_id`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ receive_id: openId, msg_type: "image", content: JSON.stringify({ image_key: imageKey }) }),
+  });
+  const d = (await res.json().catch(() => ({}))) as { code?: number };
+  if (d.code !== 0) console.error(`Lark image send failed: ${JSON.stringify(d)}`);
+}
+
 /** Send the brand picker as a Lark interactive card. Button taps arrive as a card
  *  action callback (handled separately once the card callback URL is configured). */
 export async function sendLarkBrandSelection(env: Env, openId: string): Promise<void> {

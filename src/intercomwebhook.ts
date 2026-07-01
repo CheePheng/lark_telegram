@@ -7,8 +7,8 @@
 import type { Env } from "./env";
 import { workflowBridge } from "./env";
 import { getUserByIntercomConversation, alreadyRelayedPart } from "./kv";
-import { htmlToPlainText } from "./html";
-import { sendToChannel } from "./channels";
+import { htmlToPlainText, extractImageUrls } from "./html";
+import { sendToChannel, sendImageToChannel } from "./channels";
 import { endHandoff } from "./intercom";
 
 interface ConversationPart {
@@ -54,6 +54,9 @@ export async function handleIntercomWebhook(request: Request, env: Env): Promise
         if (p.id && (await alreadyRelayedPart(env, p.id))) continue;
         const prefix = at === "admin" ? "👤 " : ""; // Fin answers plain; human prefixed
         await sendToChannel(env, ref.channel, ref.cuid, `${prefix}${htmlToPlainText(String(p.body))}`);
+        for (const url of extractImageUrls(String(p.body))) {
+          await sendImageToChannel(env, ref.channel, ref.cuid, url).catch(() => {}); // images best-effort
+        }
       }
       return ok();
     }
@@ -86,7 +89,10 @@ export async function handleIntercomWebhook(request: Request, env: Env): Promise
 }
 
 async function verifyHubSignature(env: Env, raw: string, header: string | null): Promise<boolean> {
-  if (!header) return false;
+  if (!header) {
+    console.warn("SIG_DEBUG: no X-Hub-Signature header");
+    return false;
+  }
   const provided = header.replace(/^sha1=/i, "").trim().toLowerCase();
   const key = await crypto.subtle.importKey(
     "raw",
@@ -97,6 +103,11 @@ async function verifyHubSignature(env: Env, raw: string, header: string | null):
   );
   const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(raw));
   const hex = [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  if (hex !== provided) {
+    console.warn(
+      `SIG_DEBUG mismatch provided=${provided.slice(0, 12)} computed=${hex.slice(0, 12)} secretLen=${(env.INTERCOM_CLIENT_SECRET ?? "").length} bodyLen=${raw.length}`,
+    );
+  }
   return hex === provided;
 }
 
