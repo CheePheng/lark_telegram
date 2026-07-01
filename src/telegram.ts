@@ -51,16 +51,6 @@ export async function sendTelegramMessage(env: Env, chatId: string | number, tex
   }
 }
 
-/** Relay an image (by URL) to the customer's Telegram chat. Telegram fetches the URL itself. */
-export async function sendTelegramPhoto(env: Env, chatId: string | number, photoUrl: string): Promise<void> {
-  const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendPhoto`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, photo: photoUrl }),
-  });
-  if (!res.ok) console.error(`Telegram sendPhoto failed: ${res.status} ${await res.text().catch(() => "")}`);
-}
-
 async function sendTyping(env: Env, chatId: string | number): Promise<void> {
   await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendChatAction`, {
     method: "POST",
