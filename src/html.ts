@@ -42,6 +42,29 @@ export function extractImageUrls(html: string): string[] {
   return urls;
 }
 
+export interface FinAnswer {
+  text: string; // main answer text (images, empty citations, and the Source line removed)
+  imageUrls: string[]; // inline image URLs, entity-decoded
+  source: { label: string; url: string } | null; // labelled "Source" link, if present
+}
+
+/** Split a Fin answer's HTML into card-friendly parts (to render ONE Lark card instead of
+ *  separate text + image messages): main text, image URLs, and the labelled Source link. */
+export function parseFinAnswer(html: string): FinAnswer {
+  const imageUrls = extractImageUrls(html);
+
+  let source: { label: string; url: string } | null = null;
+  const sm = /Source:\s*(?:<br\s*\/?>\s*)*<a[^>]*href=["']([^"']+)["'][^>]*>([^<]+)<\/a>/i.exec(html);
+  if (sm) source = { url: decodeEntities(sm[1]), label: decodeEntities(sm[2]).trim() };
+
+  const stripped = html
+    .replace(/<img[^>]*>/gi, "") // images become card img elements
+    .replace(/<a\b[^>]*class="[^"]*inline-citation[^"]*"[^>]*>\s*<\/a>/gi, "") // empty inline citations
+    .replace(/<p>(?:(?!<\/p>)[\s\S])*?Source:[\s\S]*?<\/p>/i, ""); // Source becomes its own element
+
+  return { text: htmlToPlainText(stripped), imageUrls, source };
+}
+
 function stripTags(s: string): string {
   return s.replace(/<[^>]+>/g, "");
 }

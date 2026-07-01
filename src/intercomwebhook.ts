@@ -7,8 +7,8 @@
 import type { Env } from "./env";
 import { workflowBridge } from "./env";
 import { getUserByIntercomConversation, alreadyRelayedPart } from "./kv";
-import { htmlToPlainText, extractImageUrls } from "./html";
-import { sendToChannel, sendImageToChannel } from "./channels";
+import { htmlToPlainText } from "./html";
+import { sendToChannel, relayAnswerPart } from "./channels";
 import { endHandoff } from "./intercom";
 
 interface ConversationPart {
@@ -53,10 +53,7 @@ export async function handleIntercomWebhook(request: Request, env: Env): Promise
         if (!p.body) continue;
         if (p.id && (await alreadyRelayedPart(env, p.id))) continue;
         const prefix = at === "admin" ? "👤 " : ""; // Fin answers plain; human prefixed
-        await sendToChannel(env, ref.channel, ref.cuid, `${prefix}${htmlToPlainText(String(p.body))}`);
-        for (const url of extractImageUrls(String(p.body))) {
-          await sendImageToChannel(env, ref.channel, ref.cuid, url).catch(() => {}); // images best-effort
-        }
+        await relayAnswerPart(env, ref.channel, ref.cuid, prefix, String(p.body));
       }
       return ok();
     }

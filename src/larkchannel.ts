@@ -11,6 +11,7 @@ import type { Env } from "./env";
 import { getCachedLarkToken, setCachedLarkToken, alreadyProcessedEvent, setBrand } from "./kv";
 import { routeInbound, resetChannel } from "./inbound";
 import { BRAND_OPTIONS, BRAND_PROMPT, brandByKey } from "./brands";
+import type { FinAnswer } from "./html";
 
 const LARK_BASE = "https://open.larksuite.com/open-apis";
 
@@ -40,15 +41,11 @@ export async function sendLarkMessage(env: Env, openId: string, text: string): P
   if (d.code !== 0) console.error(`Lark send failed: ${JSON.stringify(d)}`);
 }
 
-/** Relay an image to a Lark user: download it from the URL, upload to Lark for an
- *  image_key (Lark can't send images by URL), then send it as an image message. */
-export async function sendLarkImage(env: Env, openId: string, url: string): Promise<void> {
-  const token = await tenantToken(env);
+/** Download an image URL and upload it to Lark, returning its image_key. Throws on failure
+ *  (logs the Lark error code) so callers can fall back to text. Needs the im:resource scope. */
+async function uploadLarkImage(token: string, url: string): Promise<string> {
   const img = await fetch(url);
-  if (!img.ok) {
-    console.error(`Lark image download failed: ${img.status}`);
-    return;
-  }
+  if (!img.ok) throw new Error(`download failed: ${img.status}`);
   const blob = await img.blob();
   const form = new FormData();
   form.append("image_type", "message");
@@ -58,10 +55,19 @@ export async function sendLarkImage(env: Env, openId: string, url: string): Prom
     headers: { Authorization: `Bearer ${token}` }, // let FormData set the multipart Content-Type
     body: form,
   });
-  const upd = (await up.json().catch(() => ({}))) as { code?: number; data?: { image_key?: string } };
-  const imageKey = upd.data?.image_key;
-  if (!imageKey) {
-    console.error(`Lark image upload failed: ${JSON.stringify(upd)}`);
+  const upd = (await up.json().catch(() => ({}))) as { code?: number; msg?: string; data?: { image_key?: string } };
+  if (!upd.data?.image_key) throw new Error(`upload failed: code=${upd.code} msg=${upd.msg}`);
+  return upd.data.image_key;
+}
+
+/** Relay a single image to a Lark user as a standalone image message (used for non-Fin cases). */
+export async function sendLarkImage(env: Env, openId: string, url: string): Promise<void> {
+  const token = await tenantToken(env);
+  let imageKey: string;
+  try {
+    imageKey = await uploadLarkImage(token, url);
+  } catch (e) {
+    console.error(`Lark image relay failed: ${e}`);
     return;
   }
   const res = await fetch(`${LARK_BASE}/im/v1/messages?receive_id_type=open_id`, {
@@ -71,6 +77,58 @@ export async function sendLarkImage(env: Env, openId: string, url: string): Prom
   });
   const d = (await res.json().catch(() => ({}))) as { code?: number };
   if (d.code !== 0) console.error(`Lark image send failed: ${JSON.stringify(d)}`);
+}
+
+/** Render a Fin answer (text + image + source) as ONE Lark interactive card, so it arrives
+ *  as a single message. Uploads each image for an image_key; if none upload, falls back to a
+ *  plain-text message so the answer is never lost. */
+export async function sendLarkAnswerCard(env: Env, openId: string, answer: FinAnswer): Promise<void> {
+  const token = await tenantToken(env);
+
+  const imageKeys: string[] = [];
+  for (const url of answer.imageUrls) {
+    try {
+      imageKeys.push(await uploadLarkImage(token, url));
+    } catch (e) {
+      console.error(`Lark card image upload failed: ${e}`); // log + keep going; text still sent below
+    }
+  }
+
+  // Fallback: if no image made it through, still deliver the text (+ source) as a normal message.
+  if (imageKeys.length === 0) {
+    const srcLine = answer.source ? `\n\nSource: ${answer.source.label} (${answer.source.url})` : "";
+    await sendLarkMessage(env, openId, (answer.text || "").trim() + srcLine);
+    return;
+  }
+
+  const elements: Array<Record<string, unknown>> = [];
+  if (answer.text.trim()) elements.push({ tag: "div", text: { tag: "lark_md", content: answer.text.trim() } });
+  for (const key of imageKeys) {
+    elements.push({ tag: "img", img_key: key, alt: { tag: "plain_text", content: "image" }, mode: "fit_horizontal" });
+  }
+  if (answer.source) {
+    elements.push({ tag: "hr" });
+    elements.push({
+      tag: "note",
+      elements: [{ tag: "lark_md", content: `Source: [${answer.source.label}](${answer.source.url})` }],
+    });
+  }
+
+  const card = {
+    config: { wide_screen_mode: true },
+    header: { title: { tag: "plain_text", content: "Answer" } },
+    elements,
+  };
+  const res = await fetch(`${LARK_BASE}/im/v1/messages?receive_id_type=open_id`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ receive_id: openId, msg_type: "interactive", content: JSON.stringify(card) }),
+  });
+  const d = (await res.json().catch(() => ({}))) as { code?: number };
+  if (d.code !== 0) {
+    console.error(`Lark answer card send failed: ${JSON.stringify(d)}`);
+    await sendLarkMessage(env, openId, (answer.text || "").trim()); // fallback so the answer still arrives
+  }
 }
 
 /** Send the brand picker as a Lark interactive card. Button taps arrive as a card
