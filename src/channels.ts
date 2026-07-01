@@ -4,7 +4,7 @@
  */
 import type { Env } from "./env";
 import type { Channel } from "./kv";
-import { sendTelegramMessage, sendTelegramBrandSelection, sendTelegramPhoto } from "./telegram";
+import { sendTelegramMessage, sendTelegramBrandSelection, sendTelegramPhoto, sendTelegramAnswer } from "./telegram";
 import { sendLarkMessage, sendLarkBrandSelection, sendLarkImage, sendLarkAnswerCard } from "./larkchannel";
 import { htmlToPlainText, extractImageUrls, parseFinAnswer } from "./html";
 
@@ -33,9 +33,11 @@ export async function relayAnswerPart(
   body: string,
 ): Promise<void> {
   const images = extractImageUrls(body);
-  if (channel === "lark" && prefix === "" && images.length > 0) {
-    await sendLarkAnswerCard(env, cuid, parseFinAnswer(body));
-    return;
+  if (prefix === "" && images.length > 0) {
+    // Fin (bot) answer with image(s): one combined message per channel.
+    const answer = parseFinAnswer(body);
+    if (channel === "lark") return sendLarkAnswerCard(env, cuid, answer); // interactive card
+    return sendTelegramAnswer(env, cuid, answer); // photo/album with caption
   }
   await sendToChannel(env, channel, cuid, `${prefix}${htmlToPlainText(body)}`);
   for (const url of images) await sendImageToChannel(env, channel, cuid, url).catch(() => {});

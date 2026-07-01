@@ -12,6 +12,7 @@ import { getMapping, putMapping, alreadyProcessedEvent, setBrand } from "./kv";
 import { buildVerifyLink } from "./identity";
 import { routeInbound, resetChannel } from "./inbound";
 import { BRAND_OPTIONS, BRAND_PROMPT, brandByKey } from "./brands";
+import type { FinAnswer } from "./html";
 
 interface TelegramUpdate {
   update_id?: number;
@@ -59,6 +60,53 @@ export async function sendTelegramPhoto(env: Env, chatId: string | number, photo
     body: JSON.stringify({ chat_id: chatId, photo: photoUrl }),
   });
   if (!res.ok) console.error(`Telegram sendPhoto failed: ${res.status} ${await res.text().catch(() => "")}`);
+}
+
+const TG_CAPTION_MAX = 1024; // Telegram photo/album caption limit
+
+function answerCaption(a: FinAnswer): string {
+  const src = a.source ? `\n\nSource: ${a.source.label} (${a.source.url})` : "";
+  return `${(a.text || "").trim()}${src}`;
+}
+
+/** Render a Fin answer (text + image + source) on Telegram as one message where possible:
+ *  a photo (1 image) or album (2+) with the answer text as caption. If the caption is too
+ *  long, or there are no images, fall back to a text message (then image[s]). */
+export async function sendTelegramAnswer(env: Env, chatId: string | number, answer: FinAnswer): Promise<void> {
+  const caption = answerCaption(answer);
+  const imgs = answer.imageUrls;
+  if (imgs.length === 0) {
+    await sendTelegramMessage(env, chatId, caption);
+    return;
+  }
+  if (caption.length <= TG_CAPTION_MAX) {
+    const ok = imgs.length === 1 ? await tgSendPhoto(env, chatId, imgs[0], caption) : await tgSendMediaGroup(env, chatId, imgs, caption);
+    if (ok) return;
+  }
+  // Fallback: text first, then the image(s) as separate photos.
+  await sendTelegramMessage(env, chatId, caption);
+  for (const url of imgs) await sendTelegramPhoto(env, chatId, url).catch(() => {});
+}
+
+async function tgSendPhoto(env: Env, chatId: string | number, photo: string, caption: string): Promise<boolean> {
+  const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendPhoto`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, photo, caption }),
+  });
+  if (!res.ok) console.error(`Telegram sendPhoto(caption) failed: ${res.status} ${await res.text().catch(() => "")}`);
+  return res.ok;
+}
+
+async function tgSendMediaGroup(env: Env, chatId: string | number, urls: string[], caption: string): Promise<boolean> {
+  const media = urls.map((u, i) => (i === 0 ? { type: "photo", media: u, caption } : { type: "photo", media: u }));
+  const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMediaGroup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, media }),
+  });
+  if (!res.ok) console.error(`Telegram sendMediaGroup failed: ${res.status} ${await res.text().catch(() => "")}`);
+  return res.ok;
 }
 
 async function sendTyping(env: Env, chatId: string | number): Promise<void> {
