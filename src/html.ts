@@ -29,6 +29,19 @@ export function htmlToPlainText(html: string): string {
   return text;
 }
 
+/** Pull <img src> URLs out of Fin's HTML reply (entity-decoded) so we can relay
+ *  images to Telegram/Lark separately from the plain-text body. */
+export function extractImageUrls(html: string): string[] {
+  if (!html) return [];
+  const urls: string[] = [];
+  const re = /<img\b[^>]*\bsrc=["']([^"']+)["']/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    urls.push(decodeEntities(m[1]));
+  }
+  return urls;
+}
+
 function stripTags(s: string): string {
   return s.replace(/<[^>]+>/g, "");
 }

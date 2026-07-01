@@ -15,8 +15,8 @@ import {
   getCanonicalConversation, setCanonicalConversation, clearCanonicalConversation, type CanonicalConversation,
   getWorkflowConversation, setWorkflowConversation, clearWorkflowConversation, alreadyRelayedPart,
 } from "./kv";
-import { sendToChannel } from "./channels";
-import { htmlToPlainText } from "./html";
+import { sendToChannel, sendImageToChannel } from "./channels";
+import { htmlToPlainText, extractImageUrls } from "./html";
 import { brandByValue } from "./brands";
 
 function headers(env: Env): HeadersInit {
@@ -311,6 +311,9 @@ export async function pollAndRelayWorkflow(env: Env, channel: Channel, cuid: str
       if (p.id && (await alreadyRelayedPart(env, p.id))) continue;
       const prefix = at === "admin" ? "👤 " : ""; // Fin answers plain; human prefixed
       await sendToChannel(env, channel, cuid, `${prefix}${htmlToPlainText(String(p.body))}`);
+      for (const url of extractImageUrls(String(p.body))) {
+        await sendImageToChannel(env, channel, cuid, url).catch(() => {}); // images are best-effort
+      }
       relayedThisRound = true;
     }
     if (relayedThisRound) {
