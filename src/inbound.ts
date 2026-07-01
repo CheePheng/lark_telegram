@@ -18,8 +18,8 @@ import { sendBrandSelection } from "./channels";
 
 /** Friendly display name shown on the Intercom contact/conversation per channel. */
 const DISPLAY_NAME: Record<Channel, string> = {
-  telegram: "IGaming Telegram",
-  lark: "IGaming Lark",
+  telegram: "Telegram → Intercom (Fin AI)",
+  lark: "Lark → Intercom (Fin AI)",
 };
 
 /** Route one inbound customer message: live human handoff if open, else Fin. */

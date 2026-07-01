@@ -38,7 +38,7 @@ function channelLabel(channel: Channel): string {
   return channel === "telegram" ? "Telegram" : "Lark";
 }
 function contactName(channel: Channel): string {
-  return `IGaming ${channelLabel(channel)}`;
+  return `${channelLabel(channel)} → Intercom (Fin AI)`;
 }
 
 /** Return a cached contact id for the channel-user, creating one if needed. */
