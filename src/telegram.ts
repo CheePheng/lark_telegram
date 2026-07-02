@@ -65,7 +65,7 @@ export async function sendTelegramPhoto(env: Env, chatId: string | number, photo
 const TG_CAPTION_MAX = 1024; // Telegram photo/album caption limit
 
 function answerCaption(a: FinAnswer): string {
-  const src = a.source ? `\n\nSource: ${a.source.label} (${a.source.url})` : "";
+  const src = a.sources.length ? `\n\nSources:\n${a.sources.map((s) => `${s.label} (${s.url})`).join("\n")}` : "";
   return `${(a.text || "").trim()}${src}`;
 }
 

@@ -42,27 +42,56 @@ export function extractImageUrls(html: string): string[] {
   return urls;
 }
 
-export interface FinAnswer {
-  text: string; // main answer text (images, empty citations, and the Source line removed)
-  imageUrls: string[]; // inline image URLs, entity-decoded
-  source: { label: string; url: string } | null; // labelled "Source" link, if present
+/** Convert Fin's HTML to Lark Markdown (`lark_md`): <b>→**bold**, <a href>Title</a>→[Title](URL)
+ *  (empty-label links like inline citations are dropped), block tags → newlines. */
+export function htmlToLarkMd(html: string): string {
+  if (!html) return "";
+  let t = html;
+  t = t.replace(/<(b|strong)\b[^>]*>([\s\S]*?)<\/\1>/gi, (_m, _tag, inner) => `**${stripTags(inner).trim()}**`);
+  t = t.replace(/<a\b[^>]*href=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi, (_m, url, label) => {
+    const clean = stripTags(label).trim();
+    return clean ? `[${clean}](${url})` : ""; // drop empty citations (no label)
+  });
+  t = t.replace(/<\/(p|div|li|h[1-6]|tr)>/gi, "\n").replace(/<br\s*\/?>/gi, "\n").replace(/<li[^>]*>/gi, "• ");
+  t = stripTags(t);
+  t = decodeEntities(t);
+  return t.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-/** Split a Fin answer's HTML into card-friendly parts (to render ONE Lark card instead of
- *  separate text + image messages): main text, image URLs, and the labelled Source link. */
+export interface FinAnswer {
+  text: string; // plain text (Telegram caption / fallback), citations + Source(s) + images removed
+  textMd: string; // Lark Markdown (lark_md) version of the same body
+  imageUrls: string[]; // inline image URLs, entity-decoded
+  sources: Array<{ label: string; url: string }>; // ALL labelled links from the Source(s) section
+}
+
+/** Split a Fin answer's HTML into parts for a single combined message: body (plain + lark_md),
+ *  image URLs, and ALL "Source(s)" links (deduped). Empty inline citations are dropped so no raw
+ *  URLs leak into the body. Handles both "Source:" and "Sources:". */
 export function parseFinAnswer(html: string): FinAnswer {
   const imageUrls = extractImageUrls(html);
 
-  let source: { label: string; url: string } | null = null;
-  const sm = /Source:\s*(?:<br\s*\/?>\s*)*<a[^>]*href=["']([^"']+)["'][^>]*>([^<]+)<\/a>/i.exec(html);
-  if (sm) source = { url: decodeEntities(sm[1]), label: decodeEntities(sm[2]).trim() };
+  // Pull the trailing "Source(s):" paragraph and every labelled link inside it.
+  const sources: Array<{ label: string; url: string }> = [];
+  const seen = new Set<string>();
+  const block = /<p>(?:(?!<\/p>)[\s\S])*?Sources?:[\s\S]*?<\/p>/i.exec(html);
+  if (block) {
+    const re = /<a[^>]*href=["']([^"']+)["'][^>]*>([^<]+)<\/a>/gi;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(block[0])) !== null) {
+      const url = decodeEntities(m[1]);
+      if (!seen.has(url)) {
+        seen.add(url);
+        sources.push({ url, label: decodeEntities(m[2]).trim() });
+      }
+    }
+  }
 
-  const stripped = html
-    .replace(/<img[^>]*>/gi, "") // images become card img elements
-    .replace(/<a\b[^>]*class="[^"]*inline-citation[^"]*"[^>]*>\s*<\/a>/gi, "") // empty inline citations
-    .replace(/<p>(?:(?!<\/p>)[\s\S])*?Source:[\s\S]*?<\/p>/i, ""); // Source becomes its own element
+  // Body = html minus images, minus empty citations, minus the Source(s) paragraph.
+  let frag = html.replace(/<img[^>]*>/gi, "").replace(/<a\b[^>]*>\s*<\/a>/gi, "");
+  if (block) frag = frag.replace(block[0], "");
 
-  return { text: htmlToPlainText(stripped), imageUrls, source };
+  return { text: htmlToPlainText(frag), textMd: htmlToLarkMd(frag), imageUrls, sources };
 }
 
 function stripTags(s: string): string {

@@ -79,9 +79,10 @@ export async function sendLarkImage(env: Env, openId: string, url: string): Prom
   if (d.code !== 0) console.error(`Lark image send failed: ${JSON.stringify(d)}`);
 }
 
-/** Render a Fin answer (text + image + source) as ONE Lark interactive card, so it arrives
- *  as a single message. Uploads each image for an image_key; if none upload, falls back to a
- *  plain-text message so the answer is never lost. */
+/** Render a Fin answer as ONE Lark interactive card: title "Answer", the body as lark_md
+ *  (so links render as clickable hyperlinks), image(s) inline, and a "Sources:" list of
+ *  Markdown links. Images are uploaded for an image_key; a failed upload just omits that image.
+ *  Only if the whole card send fails do we fall back to a plain-text message. */
 export async function sendLarkAnswerCard(env: Env, openId: string, answer: FinAnswer): Promise<void> {
   const token = await tenantToken(env);
 
@@ -90,29 +91,21 @@ export async function sendLarkAnswerCard(env: Env, openId: string, answer: FinAn
     try {
       imageKeys.push(await uploadLarkImage(token, url));
     } catch (e) {
-      console.error(`Lark card image upload failed: ${e}`); // log + keep going; text still sent below
+      console.error(`Lark card image upload failed: ${e}`); // omit this image; card still sent
     }
   }
 
-  // Fallback: if no image made it through, still deliver the text (+ source) as a normal message.
-  if (imageKeys.length === 0) {
-    const srcLine = answer.source ? `\n\nSource: ${answer.source.label} (${answer.source.url})` : "";
-    await sendLarkMessage(env, openId, (answer.text || "").trim() + srcLine);
-    return;
-  }
-
   const elements: Array<Record<string, unknown>> = [];
-  if (answer.text.trim()) elements.push({ tag: "div", text: { tag: "lark_md", content: answer.text.trim() } });
+  if (answer.textMd.trim()) elements.push({ tag: "div", text: { tag: "lark_md", content: answer.textMd.trim() } });
   for (const key of imageKeys) {
     elements.push({ tag: "img", img_key: key, alt: { tag: "plain_text", content: "image" }, mode: "fit_horizontal" });
   }
-  if (answer.source) {
+  if (answer.sources.length) {
+    const lines = answer.sources.map((s) => `• [${s.label}](${s.url})`).join("\n");
     elements.push({ tag: "hr" });
-    elements.push({
-      tag: "note",
-      elements: [{ tag: "lark_md", content: `Source: [${answer.source.label}](${answer.source.url})` }],
-    });
+    elements.push({ tag: "div", text: { tag: "lark_md", content: `**Sources:**\n${lines}` } });
   }
+  if (elements.length === 0) elements.push({ tag: "div", text: { tag: "lark_md", content: " " } });
 
   const card = {
     config: { wide_screen_mode: true },
@@ -127,7 +120,11 @@ export async function sendLarkAnswerCard(env: Env, openId: string, answer: FinAn
   const d = (await res.json().catch(() => ({}))) as { code?: number };
   if (d.code !== 0) {
     console.error(`Lark answer card send failed: ${JSON.stringify(d)}`);
-    await sendLarkMessage(env, openId, (answer.text || "").trim()); // fallback so the answer still arrives
+    // Fallback (req 9: raw URLs only if hyperlink rendering fails).
+    const srcTxt = answer.sources.length
+      ? `\n\nSources:\n${answer.sources.map((s) => `${s.label} (${s.url})`).join("\n")}`
+      : "";
+    await sendLarkMessage(env, openId, answer.text.trim() + srcTxt);
   }
 }
 

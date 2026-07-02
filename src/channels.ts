@@ -33,11 +33,12 @@ export async function relayAnswerPart(
   body: string,
 ): Promise<void> {
   const images = extractImageUrls(body);
-  if (prefix === "" && images.length > 0) {
-    // Fin (bot) answer with image(s): one combined message per channel.
+  const hasLinks = /<a\b[^>]*href=/i.test(body);
+  if (prefix === "" && (images.length > 0 || hasLinks)) {
+    // Fin (bot) answer with image(s) or links: one combined, clean message per channel.
     const answer = parseFinAnswer(body);
-    if (channel === "lark") return sendLarkAnswerCard(env, cuid, answer); // interactive card
-    return sendTelegramAnswer(env, cuid, answer); // photo/album with caption
+    if (channel === "lark") return sendLarkAnswerCard(env, cuid, answer); // interactive card (lark_md links)
+    return sendTelegramAnswer(env, cuid, answer); // photo/album + caption, or text + sources
   }
   await sendToChannel(env, channel, cuid, `${prefix}${htmlToPlainText(body)}`);
   for (const url of images) await sendImageToChannel(env, channel, cuid, url).catch(() => {});
